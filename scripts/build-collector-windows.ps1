@@ -1,7 +1,9 @@
 param(
   [string]$Version = '0.1.0',
   [string]$OutputDirectory = 'artifacts',
-  [string]$NodeExecutable = ''
+  [string]$NodeExecutable = '',
+  [string]$ApiBaseUrl = '',
+  [string]$CaCertificatePath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +17,25 @@ if (-not $NodeExecutable) {
   $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source
 }
 $nodePath = (Resolve-Path $NodeExecutable).Path
+$normalizedApiBaseUrl = ''
+if ($ApiBaseUrl) {
+  try {
+    $apiUri = [Uri]::new($ApiBaseUrl)
+  } catch {
+    throw 'ApiBaseUrl must be a valid absolute HTTPS URL.'
+  }
+  if (-not $apiUri.IsAbsoluteUri -or $apiUri.Scheme -ne 'https' -or $apiUri.UserInfo) {
+    throw 'ApiBaseUrl must be an absolute HTTPS URL without embedded credentials.'
+  }
+  $normalizedApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
+}
+$resolvedCaCertificatePath = ''
+if ($CaCertificatePath) {
+  if (-not (Test-Path -LiteralPath $CaCertificatePath -PathType Leaf)) {
+    throw "CA certificate does not exist: $CaCertificatePath"
+  }
+  $resolvedCaCertificatePath = (Resolve-Path -LiteralPath $CaCertificatePath).Path
+}
 $packageName = "collector-windows-v$Version"
 $zipPath = Join-Path $outputRoot "$packageName.zip"
 $checksumPath = "$zipPath.sha256"
@@ -61,7 +82,6 @@ try {
     version = $Version
     dependencies = @{
       'ali-oss' = '6.23.0'
-      'argon2' = '0.45.1'
       'cheerio' = '1.1.2'
       'mysql2' = '3.14.4'
       'playwright' = '1.55.0'
@@ -95,6 +115,20 @@ COLLECTOR_DATA_DIR=../data
 COLLECTOR_CONTROL_PORT=43127
 '@
   Write-Utf8NoBom (Join-Path $stageRoot '.env.example') $sampleEnvironment
+  if ($normalizedApiBaseUrl) {
+    $configuredEnvironment = @"
+NODE_ENV=production
+COLLECTOR_API_BASE_URL=$normalizedApiBaseUrl
+COLLECTOR_DATA_DIR=../data
+COLLECTOR_CONTROL_PORT=43127
+"@
+    Write-Utf8NoBom (Join-Path $stageRoot '.env') $configuredEnvironment
+  }
+  if ($resolvedCaCertificatePath) {
+    $certificateDirectory = Join-Path $stageRoot 'certs'
+    New-Item -ItemType Directory -Path $certificateDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $resolvedCaCertificatePath -Destination (Join-Path $certificateDirectory 'server-ca.pem')
+  }
   Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/collector-windows.md') -Destination (Join-Path $stageRoot 'README.md')
 
   $launcher = @'
@@ -106,6 +140,7 @@ if not exist "%ROOT%.env" (
   pause
   exit /b 1
 )
+if exist "%ROOT%certs\server-ca.pem" set "NODE_EXTRA_CA_CERTS=%ROOT%certs\server-ca.pem"
 pushd "%ROOT%"
 start "Douyin Collector" "%ROOT%runtime\node.exe" --enable-source-maps --env-file="%ROOT%.env" "%ROOT%app\index.js"
 timeout /t 2 /nobreak >nul

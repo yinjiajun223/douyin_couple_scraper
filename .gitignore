@@ -20,6 +20,4 @@ data/screenshots/
 data/*.csv
 data/*.json
 data/*.html
-release/
 
-release/*.tar

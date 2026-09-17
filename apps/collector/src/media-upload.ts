@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { validateMediaUpload } from '@douyin/domain';
-import type { EvidenceImageMimeType, MediaPurpose } from '@douyin/domain';
+import { validateMediaUpload } from '@douyin/domain/collector';
+import type { EvidenceImageMimeType, MediaPurpose } from '@douyin/domain/collector';
 
 import type { DeviceTokenStore } from './device-identity.js';
 

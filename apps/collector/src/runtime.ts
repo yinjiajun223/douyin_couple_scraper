@@ -8,7 +8,7 @@ import {
   parseCampaignRuleSet,
 } from '@douyin/contracts';
 import type { CollectorBatch, CollectorRunProgress } from '@douyin/contracts';
-import { determineRunStopReason, evaluateHardFilters } from '@douyin/domain';
+import { determineRunStopReason, evaluateHardFilters } from '@douyin/domain/collector';
 import {
   DOUYIN_FEED_CARD_SELECTORS,
   DOUYIN_PARSER_VERSION,

@@ -1,12 +1,43 @@
-# 抖音素人博主运营平台
+# 抖音达人采集运营平台
 
-这是一个团队共享的抖音博主发现、证据筛选、人工复核和合作跟进平台。默认模板寻找疑似 18–24 岁、0–5000 粉丝、近 15 天有一条万赞作品的素人账号；所有规则都可按任务调整，AI 只提供建议，最终结论由运营人员确认。
+一个面向团队的抖音达人发现、证据筛选、人工复核与合作跟进平台。运营人员在自己的 Windows 电脑上人工启动采集，服务端负责共享任务、候选、证据、审计和协作状态。
 
-系统由 Ubuntu 服务器上的 Web/API/worker、阿里云 RDS MySQL 8、私有 OSS，以及运营同事 Windows 电脑上的本地采集助手组成。抖音登录 Cookie 只留在本机独立浏览器画像中；服务器不能远程自动启动浏览，截图由本机直传 OSS，也不上传完整视频。
+默认任务用于寻找 0–5000 粉丝、近 15 天存在万赞作品的潜在素人达人；所有规则均可按任务调整。年龄、素人属性和内容适配属于辅助判断，AI 不替代人工结论。
+
+## 能力概览
+
+- 团队登录、邀请、角色与设备授权。
+- 筛选任务、不可变规则快照和受控停止条件。
+- Windows 本机独立抖音画像、人工登录和人工开始。
+- 达人、作品、观察历史、硬筛证据和私有截图。
+- 人工复核、负责人分配、联系信息与合作阶段。
+- 可选 AI 分析、版本历史、重试与降级。
+- 审计记录、生产健康检查、备份恢复和发布回滚。
+
+系统不会自动点赞、关注、评论、私信、转发或点击“不感兴趣”。抖音 Cookie、验证码和浏览器画像只留在运营人员本机；截图通过短期签名地址直传私有 OSS，不上传完整视频。
+
+## 系统组成
+
+- Ubuntu/Docker：Nginx gateway、Web、API 和 worker。
+- 阿里云 RDS MySQL 8：业务数据、任务、审计和协作状态。
+- 阿里云私有 OSS：截图等证据对象。
+- Windows 采集助手：可见 Chrome、独立画像、本地持久队列和 DPAPI 设备令牌。
+
+采集必须由本机用户明确开始或继续。服务器创建运行、刷新页面或重启助手都不会远程操作抖音。
+
+## 文档入口
+
+- [产品使用手册](docs/product-manual.md)：管理员、运营人员和普通成员的完整使用流程。
+- [Windows 采集助手](docs/collector-windows.md)：安装、配对、升级和发布包验证。
+- [管理员手册](docs/operations/admin-guide.md)：成员、设备、AI、安全和交接。
+- [运营手册](docs/operations/operator-guide.md)：任务、采集、复核和合作跟进。
+- [本地开发](docs/local-development.md)：开发环境和端到端联调。
+- [生产部署](docs/operations/production-deployment.md)：RDS TLS、OSS、Compose、发布和回滚。
+- [备份恢复](docs/operations/backup-and-recovery.md) 与 [负载测试](docs/operations/load-test.md)。
 
 ## 本地开发
 
-要求 Node.js 22.12+、npm 和 Docker Desktop。首次运行：
+要求 Node.js 22.12+、npm、Docker Desktop 和 Chrome。首次运行：
 
 ```powershell
 npm install
@@ -15,29 +46,80 @@ npm run dev:setup
 npm run dev:local
 ```
 
-管理后台位于 `http://127.0.0.1:5173`，本地采集控制页位于 `http://127.0.0.1:43127`。完整说明见 [本地调试](docs/local-development.md)。
+开发入口：
 
-## Windows 采集助手
+- 管理后台：`http://127.0.0.1:5173`
+- API readiness：`http://127.0.0.1:3000/health/ready`
+- 本机采集控制页：`http://127.0.0.1:43127`
 
-在 `.env` 中至少配置 `COLLECTOR_API_BASE_URL`、`COLLECTOR_DATA_DIR` 和 `COLLECTOR_CONTROL_PORT`，然后运行默认入口：
+完整检查：
 
 ```powershell
-.\run.ps1
+npm run check
 ```
 
-打开 `http://127.0.0.1:43127`，创建独立画像、输入一次性配对码并人工开始任务。详细步骤见 [Windows 采集助手](docs/collector-windows.md) 和 [运营手册](docs/operations/operator-guide.md)。
+MySQL 集成与浏览器流程按需运行：
+
+```powershell
+npm run test:mysql
+npm run test:e2e
+```
+
+## Windows 正式用户
+
+管理员生成的正式 ZIP 已包含 Node、非秘密配置和所需公开 CA。用户只需：
+
+1. 安装 Chrome。
+2. 完整解压 ZIP，不能直接在压缩包内运行。
+3. 双击 `start-collector.cmd`，保持控制台窗口打开。
+4. 在 `http://127.0.0.1:43127` 输入管理员生成的一次性配对码。
+5. 创建独立画像、人工登录抖音，再对已下发运行点击“人工开始”。
+
+用户不需要安装 Node、npm、Python 或编译工具。当前正式采集器只支持 Windows；macOS 需要 Keychain、启动器、签名和真机验证完成后才能发布。
+
+## Windows 发布包
+
+在仓库根目录构建并验证：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/build-collector-windows.ps1 `
+  -Version 0.1.0 `
+  -ApiBaseUrl "https://ops.example.com" `
+  -CaCertificatePath "release/collector-server-ca.pem"
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/test-collector-windows-package.ps1 `
+  -PackagePath artifacts/collector-windows-v0.1.0.zip
+```
+
+使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
 
 ## 生产部署
 
-生产使用固定版本容器镜像、TLS 反向代理、RDS 最小权限账号和私有 OSS。部署前必须运行在线预检，完整流程见 [生产部署手册](docs/operations/production-deployment.md)；备份恢复和负载验收分别见 [备份恢复](docs/operations/backup-and-recovery.md) 与 [低并发负载测试](docs/operations/load-test.md)。
+生产使用固定版本容器镜像、TLS 反向代理、RDS 最小权限账号和私有 OSS。部署前必须执行在线预检；数据库迁移只向前执行，API/worker 不得使用迁移账号。
+
+```bash
+sh scripts/deploy-production.sh .env.production
+```
+
+`/health/ready` 会分别报告 MySQL、OSS 和可选 AI 状态。AI 未配置可以显示 `degraded`，但 MySQL 和 OSS 必须正常。中国大陆云服务器绑定域名前，还必须完成 ICP 备案和当前云厂商的接入备案；证书签发不代表域名已具备公网接入条件。
+
+## 安全原则
+
+- 不提交或输出 `.env.production`、密码、OSS Secret、AI key、Cookie、会话令牌、设备令牌或私钥。
+- RDS 强制 TLS 和 CA 校验；业务账号与迁移账号分离。
+- OSS bucket 保持 private，应用只使用最小权限。
+- 对外只开放 80/443，API、worker、MySQL 和 Docker 端口不直接暴露。
+- 日常业务查看使用管理后台；DMS 只用于授权管理员的只读核对和故障排查。
 
 ## 旧结果迁移与兼容入口
 
-旧 JSON/CSV 可通过正常 ingestion 链路导入；缺失粉丝或作品证据保持 `unknown`，截图路径只计入报告而不会被隐式上传：
+旧 JSON/CSV 可通过正常 ingestion 链路导入；缺失证据保持 `unknown`，本地截图路径不会被隐式上传：
 
 ```powershell
 $env:DATABASE_URL = 'mysql://...'
 npm run legacy:import -- --input data/全部候选.json --workspace-id <workspace-id> --actor-user-id <admin-user-id>
 ```
 
-旧单机采集器仅供回退：`.\legacy\run.ps1` 或 `npm run legacy`。它不会从仓库根目录的默认入口启动；兼容行为记录在 [legacy 基线](legacy/BASELINE.md)。
+旧单机采集器仅供回退：`.\legacy\run.ps1` 或 `npm run legacy`。兼容行为记录在 [legacy 基线](legacy/BASELINE.md)。

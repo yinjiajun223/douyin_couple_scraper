@@ -1,4 +1,4 @@
-import { parseCollectorConfig } from '@douyin/domain';
+import { parseCollectorConfig } from '@douyin/domain/collector';
 import {
   CollectorBrowserProfileStore,
   launchSelectedCollectorProfile,

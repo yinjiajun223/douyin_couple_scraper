@@ -38,7 +38,7 @@ try {
   for ($attempt = 0; $attempt -lt 40; $attempt += 1) {
     try {
       $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/" -TimeoutSec 1
-      if ($response.StatusCode -eq 200 -and $response.Content -match 'LOCAL COLLECTOR') {
+      if ($response.StatusCode -eq 200 -and $response.Content -match '<form id="pair-form">') {
         $ready = $true
         break
       }

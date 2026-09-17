@@ -3,7 +3,7 @@
 ## 首次启动
 
 1. 解压版本包，不要直接在压缩包内运行。
-2. 将 `.env.example` 复制为 `.env`，填写公司的 HTTPS 管理后台地址。默认数据目录是版本目录外的 `../data`，升级时不会覆盖登录画像、DPAPI 设备令牌或待同步队列。
+2. 管理员预配置的正式包已经包含 `.env`，普通用户无需修改；若包中没有 `.env`，再将 `.env.example` 复制为 `.env` 并填写公司的 HTTPS 管理后台地址。默认数据目录是版本目录外的 `../data`，升级时不会覆盖登录画像、DPAPI 设备令牌或待同步队列。
 3. 双击 `start-collector.cmd`。启动器只使用包内 `runtime/node.exe`，不要求电脑预装 Node.js。
 4. 打开 `http://127.0.0.1:43127`，输入设备名称和管理员生成的一次性配对码，确认“已连接团队”。创建并选择独立推荐圈层画像。
 5. 点击“打开抖音登录”，先人工完成登录并确认推荐内容；验证码只能人工处理，这一步不会开始采集。
@@ -25,8 +25,12 @@
 在仓库根目录执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.0.zip
+powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
+  -ApiBaseUrl "https://ops.example.com" `
+  -CaCertificatePath "release/collector-server-ca.pem"
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.1.zip
 ```
+
+`CaCertificatePath` 只接受公开 CA/服务器证书，构建器会将它作为 `NODE_EXTRA_CA_CERTS` 随包分发，不得打包私钥。使用公开可信 CA 的域名时可以省略此参数。
 
 冒烟脚本在全新临时目录中使用包内 Node，验证 DPAPI 配对令牌、持久画像、可见 Chrome 启动以及本地控制页。测试数据完成后删除，不读取系统 Chrome/Edge 日常画像。

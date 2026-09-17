@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { createDefaultCampaignRuleSet } from '@douyin/contracts';
-import { evaluateHardFilters } from '@douyin/domain';
+import { evaluateHardFilters } from '@douyin/domain/collector';
 import { describe, expect, it, vi } from 'vitest';
 
 import { inspectDouyinCreatorProfile } from './profile-inspection.js';
