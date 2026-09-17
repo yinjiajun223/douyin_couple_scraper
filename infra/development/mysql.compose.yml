@@ -1,0 +1,24 @@
+name: douyin-ops-development
+
+services:
+  mysql-dev:
+    image: mysql:8.0
+    command: ['--log-bin-trust-function-creators=1']
+    environment:
+      MYSQL_DATABASE: douyin_ops_dev
+      MYSQL_USER: douyin_dev
+      MYSQL_PASSWORD: local-dev-password
+      MYSQL_ROOT_PASSWORD: local-dev-root-password
+    ports:
+      - '127.0.0.1:33306:3306'
+    volumes:
+      - mysql-dev-data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-udouyin_dev', '-plocal-dev-password']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  mysql-dev-data:

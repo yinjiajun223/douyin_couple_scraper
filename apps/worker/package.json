@@ -1,0 +1,17 @@
+{
+  "name": "@douyin/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --enable-source-maps dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@douyin/contracts": "*",
+    "@douyin/domain": "*",
+    "mysql2": "^3.24.4"
+  }
+}

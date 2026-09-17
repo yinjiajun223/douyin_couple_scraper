@@ -1,0 +1,50 @@
+{
+  "status_code": 0,
+  "aweme_list": [
+    {
+      "aweme_id": "7600000000000000001",
+      "aweme_type": 0,
+      "desc": "放学后的校园日常",
+      "author": {
+        "nickname": "校园小林",
+        "sec_uid": "MS4wLjABAAAAfixture-campus"
+      },
+      "statistics": {
+        "digg_count": 12500
+      },
+      "share_info": {
+        "share_url": "https://www.iesdouyin.com/share/video/7600000000000000001/?region=CN"
+      },
+      "video": {
+        "duration": 16000
+      }
+    },
+    {
+      "aweme_id": "7600000000000000002",
+      "desc": "缺少公开作者标识，不应进入采集结果",
+      "author": {
+        "nickname": "无标识作者"
+      },
+      "statistics": {
+        "digg_count": 99999
+      },
+      "share_info": {
+        "share_url": "https://www.iesdouyin.com/share/video/7600000000000000002/"
+      }
+    },
+    {
+      "aweme_id": "7600000000000000003",
+      "desc": "分享地址中的作品 ID 不匹配，不应猜测",
+      "author": {
+        "nickname": "异常样例",
+        "sec_uid": "MS4wLjABAAAAfixture-invalid"
+      },
+      "statistics": {
+        "digg_count": 80000
+      },
+      "share_info": {
+        "share_url": "https://www.iesdouyin.com/share/video/7600000000000099999/"
+      }
+    }
+  ]
+}

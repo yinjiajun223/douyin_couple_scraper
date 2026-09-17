@@ -1,0 +1,11 @@
+.git
+.github
+.env
+artifacts
+collector-data
+data
+node_modules
+test-results
+playwright-report
+**/*.tsbuildinfo
+**/dist

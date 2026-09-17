@@ -1,0 +1,138 @@
+name: douyin-ops
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL}
+  NODE_EXTRA_CA_CERTS: /run/certs/rds-ca.pem
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+  OSS_ENDPOINT: ${OSS_ENDPOINT}
+  OSS_REGION: ${OSS_REGION}
+  OSS_BUCKET: ${OSS_BUCKET}
+  OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID}
+  OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET}
+  OSS_READINESS_PROBE: 'true'
+
+x-rds-ca-volumes: &rds-ca-volumes
+  - ${RDS_CA_CERT_PATH}:/run/certs/rds-ca.pem:ro
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
+
+services:
+  migrate:
+    image: ${API_IMAGE}
+    profiles: ['tools']
+    environment:
+      <<: *app-environment
+      DATABASE_URL: ${MIGRATION_DATABASE_URL}
+    command: ['node', 'packages/domain/dist/database/migrate-cli.js']
+    volumes: *rds-ca-volumes
+    networks:
+      - edge
+    logging: *default-logging
+
+  gateway:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./proxy_params:/etc/nginx/proxy_params:ro
+      - ${TLS_CERT_DIRECTORY}:/etc/nginx/tls:ro
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    logging: *default-logging
+
+  web:
+    image: ${WEB_IMAGE}
+    restart: unless-stopped
+    expose:
+      - '8080'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/health']
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          cpus: '0.20'
+          memory: 96M
+    logging: *default-logging
+
+  api:
+    image: ${API_IMAGE}
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      API_HOST: 0.0.0.0
+      API_PORT: 3000
+      SESSION_SECRET: ${SESSION_SECRET}
+      COLLECTOR_MIN_VERSION: ${COLLECTOR_MIN_VERSION:-0.1.0}
+    expose:
+      - '3000'
+    volumes: *rds-ca-volumes
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          cpus: '0.65'
+          memory: 640M
+    logging: *default-logging
+
+  worker:
+    image: ${WORKER_IMAGE}
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      WORKER_ID: ${WORKER_ID:-worker-1}
+      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-2000}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      MEDIA_RETENTION_DAYS: ${MEDIA_RETENTION_DAYS:-180}
+      MEDIA_CLEANUP_BATCH_SIZE: ${MEDIA_CLEANUP_BATCH_SIZE:-100}
+      MEDIA_CLEANUP_INTERVAL_MS: ${MEDIA_CLEANUP_INTERVAL_MS:-3600000}
+    volumes: *rds-ca-volumes
+    networks:
+      - edge
+    deploy:
+      resources:
+        limits:
+          cpus: '0.65'
+          memory: 640M
+    logging: *default-logging
+
+networks:
+  edge:
+    driver: bridge

@@ -1,0 +1,9 @@
+services:
+  migrate:
+    image: ${DRILL_API_IMAGE}
+  api:
+    image: ${DRILL_API_IMAGE}
+  worker:
+    image: ${DRILL_WORKER_IMAGE}
+  web:
+    image: ${DRILL_WEB_IMAGE}

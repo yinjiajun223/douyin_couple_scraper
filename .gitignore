@@ -1,0 +1,25 @@
+# .agents
+node_modules/
+dist/
+coverage/
+artifacts/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# 本地开发运行数据只保留在当前电脑。
+.local/
+
+# 采集结果和浏览器登录资料只保留在本机，严禁提交。
+data/browser-profile/
+data/screenshots/
+data/*.csv
+data/*.json
+data/*.html
+release/
+
+release/*.tar

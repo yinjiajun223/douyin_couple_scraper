@@ -1,0 +1,21 @@
+{
+  "name": "@douyin/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --enable-source-maps --watch dist/server.js",
+    "start": "node --enable-source-maps dist/server.js",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@douyin/contracts": "*",
+    "@douyin/domain": "*",
+    "@fastify/cookie": "^11.1.2",
+    "fastify": "^5.6.0",
+    "mysql2": "^3.14.4"
+  }
+}

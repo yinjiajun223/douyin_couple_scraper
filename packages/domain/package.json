@@ -1,0 +1,35 @@
+{
+  "name": "@douyin/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "bootstrap-admin": "node --enable-source-maps dist/auth/bootstrap-admin-cli.js",
+    "build": "tsc -p tsconfig.json",
+    "legacy:import": "node --enable-source-maps dist/legacy/legacy-import-cli.js",
+    "migrate": "node --enable-source-maps dist/database/migrate-cli.js",
+    "seed": "node --enable-source-maps dist/database/seed-cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "dependencies": {
+    "@douyin/contracts": "*",
+    "@douyin/platform-douyin": "*",
+    "ali-oss": "^6.23.0",
+    "argon2": "^0.45.1",
+    "mysql2": "^3.14.4",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/ali-oss": "^6.23.3"
+  }
+}
