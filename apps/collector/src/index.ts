@@ -21,9 +21,13 @@ export {
 export type { CollectorBrowserProfile, PersistentBrowserLauncher } from './browser-profiles.js';
 export {
   CollectorPairingError,
+  createPlatformSecretProtector,
   DeviceTokenStore,
+  MacOsKeychainProtector,
+  MacOsKeychainUnavailableError,
   pairAndStoreCollectorDevice,
   redactCollectorSecrets,
+  UnsupportedCollectorPlatformError,
   WindowsDpapiProtector,
   WindowsDpapiUnavailableError,
 } from './device-identity.js';

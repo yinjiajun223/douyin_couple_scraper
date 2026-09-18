@@ -3,7 +3,7 @@
 ## 首次启动
 
 1. 解压版本包，不要直接在压缩包内运行。
-2. 管理员预配置的正式包已经包含 `.env`，普通用户无需修改；若包中没有 `.env`，再将 `.env.example` 复制为 `.env` 并填写公司的 HTTPS 管理后台地址。默认数据目录是版本目录外的 `../data`，升级时不会覆盖登录画像、DPAPI 设备令牌或待同步队列。
+2. 管理员预配置的正式包已经内置服务器地址，并附带可见的 `collector.env` 供故障核对；普通用户不需要创建或修改任何配置文件。默认数据目录是版本目录外的 `../data`，升级时不会覆盖登录画像、DPAPI 设备令牌或待同步队列。
 3. 双击 `start-collector.cmd`。启动器只使用包内 `runtime/node.exe`，不要求电脑预装 Node.js。
 4. 打开 `http://127.0.0.1:43127`，输入设备名称和管理员生成的一次性配对码，确认“已连接团队”。创建并选择独立推荐圈层画像。
 5. 点击“打开抖音登录”，先人工完成登录并确认推荐内容；验证码只能人工处理，这一步不会开始采集。
@@ -16,7 +16,7 @@
 
 1. 先在本地控制页暂停或终止当前任务，等待待同步队列清空，再关闭采集助手窗口。
 2. 将新版本解压到与旧版本同级的新目录，不要覆盖旧目录。
-3. 复制旧版本 `.env` 到新目录。确认 `COLLECTOR_DATA_DIR` 仍指向同一个版本外数据目录。
+3. 不要复制旧版配置；新包已经内置当前服务器地址。确认新版本仍使用同级的 `../data` 数据目录。
 4. 启动新版本，确认画像、配对状态和待同步数量正常。服务端若要求更高版本，旧版本只显示升级阻断，不会继续提交。
 5. 新版本验证完成前保留旧版本目录；需要回退时关闭新版本并重新启动旧版本。不得复制或共享 `data/secrets/device-token.dpapi`，该文件只能由原 Windows 用户解密。
 
@@ -28,7 +28,7 @@
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.1.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.3.zip
 ```
 
 `CaCertificatePath` 只接受公开 CA/服务器证书，构建器会将它作为 `NODE_EXTRA_CA_CERTS` 随包分发，不得打包私钥。使用公开可信 CA 的域名时可以省略此参数。

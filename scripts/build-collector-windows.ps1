@@ -1,8 +1,8 @@
 param(
-  [string]$Version = '0.1.0',
+  [string]$Version = '0.1.3',
   [string]$OutputDirectory = 'artifacts',
   [string]$NodeExecutable = '',
-  [string]$ApiBaseUrl = '',
+  [Parameter(Mandatory = $true)][string]$ApiBaseUrl,
   [string]$CaCertificatePath = ''
 )
 
@@ -17,17 +17,18 @@ if (-not $NodeExecutable) {
   $NodeExecutable = (Get-Command node.exe -ErrorAction Stop).Source
 }
 $nodePath = (Resolve-Path $NodeExecutable).Path
-$normalizedApiBaseUrl = ''
-if ($ApiBaseUrl) {
-  try {
-    $apiUri = [Uri]::new($ApiBaseUrl)
-  } catch {
-    throw 'ApiBaseUrl must be a valid absolute HTTPS URL.'
-  }
-  if (-not $apiUri.IsAbsoluteUri -or $apiUri.Scheme -ne 'https' -or $apiUri.UserInfo) {
-    throw 'ApiBaseUrl must be an absolute HTTPS URL without embedded credentials.'
-  }
-  $normalizedApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
+try {
+  $apiUri = [Uri]::new($ApiBaseUrl)
+} catch {
+  throw 'ApiBaseUrl must be a valid absolute HTTPS URL.'
+}
+if (-not $apiUri.IsAbsoluteUri -or $apiUri.Scheme -ne 'https' -or $apiUri.UserInfo) {
+  throw 'ApiBaseUrl must be an absolute HTTPS URL without embedded credentials.'
+}
+$normalizedApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
+$sourceVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'apps/collector/package.json') -Raw | ConvertFrom-Json).version
+if ($Version -ne $sourceVersion) {
+  throw "Requested version $Version does not match collector source version $sourceVersion."
 }
 $resolvedCaCertificatePath = ''
 if ($CaCertificatePath) {
@@ -114,16 +115,14 @@ COLLECTOR_API_BASE_URL=https://ops.example.com
 COLLECTOR_DATA_DIR=../data
 COLLECTOR_CONTROL_PORT=43127
 '@
-  Write-Utf8NoBom (Join-Path $stageRoot '.env.example') $sampleEnvironment
-  if ($normalizedApiBaseUrl) {
-    $configuredEnvironment = @"
+  Write-Utf8NoBom (Join-Path $stageRoot 'collector.env.example') $sampleEnvironment
+  $configuredEnvironment = @"
 NODE_ENV=production
 COLLECTOR_API_BASE_URL=$normalizedApiBaseUrl
 COLLECTOR_DATA_DIR=../data
 COLLECTOR_CONTROL_PORT=43127
 "@
-    Write-Utf8NoBom (Join-Path $stageRoot '.env') $configuredEnvironment
-  }
+  Write-Utf8NoBom (Join-Path $stageRoot 'collector.env') $configuredEnvironment
   if ($resolvedCaCertificatePath) {
     $certificateDirectory = Join-Path $stageRoot 'certs'
     New-Item -ItemType Directory -Path $certificateDirectory -Force | Out-Null
@@ -131,22 +130,21 @@ COLLECTOR_CONTROL_PORT=43127
   }
   Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/collector-windows.md') -Destination (Join-Path $stageRoot 'README.md')
 
-  $launcher = @'
+  $launcher = @"
 @echo off
 setlocal
 set "ROOT=%~dp0"
-if not exist "%ROOT%.env" (
-  echo Missing .env. Copy .env.example to .env and configure COLLECTOR_API_BASE_URL.
-  pause
-  exit /b 1
-)
+set "NODE_ENV=production"
+set "COLLECTOR_API_BASE_URL=$normalizedApiBaseUrl"
+set "COLLECTOR_DATA_DIR=../data"
+set "COLLECTOR_CONTROL_PORT=43127"
 if exist "%ROOT%certs\server-ca.pem" set "NODE_EXTRA_CA_CERTS=%ROOT%certs\server-ca.pem"
 pushd "%ROOT%"
-start "Douyin Collector" "%ROOT%runtime\node.exe" --enable-source-maps --env-file="%ROOT%.env" "%ROOT%app\index.js"
+start "Douyin Collector" "%ROOT%runtime\node.exe" --enable-source-maps "%ROOT%app\index.js"
 timeout /t 2 /nobreak >nul
 start "" "http://127.0.0.1:43127"
 popd
-'@
+"@
   Write-Utf8NoBom (Join-Path $stageRoot 'start-collector.cmd') $launcher
 
   $smokeDirectory = Join-Path $stageRoot 'smoke'

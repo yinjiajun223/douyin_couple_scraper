@@ -74,9 +74,9 @@ npm run test:e2e
 - 生产 OSS 必须保持 private，并使用最小权限 RAM 身份。
 - 日志、测试夹具和错误信息都必须经过敏感字段脱敏。
 
-## Windows 采集助手发布
+## 本机采集助手发布
 
-正式用户包应做到“解压后双击 `start-collector.cmd`”，用户无需安装 Node、npm、Python 或编译工具，但必须安装 Chrome。
+正式用户包应做到 Windows“解压后双击 `start-collector.cmd`”、macOS“解压后双击 `start-collector.command`”。用户无需安装 Node、npm、Python 或编译工具，但必须安装 Chrome。
 
 构建和冒烟验证入口：
 
@@ -92,12 +92,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -PackagePath artifacts/collector-windows-v<version>.zip
 ```
 
+```bash
+bash scripts/build-collector-macos.sh \
+  --version <version> \
+  --architecture universal \
+  --api-base-url <https-url> \
+  --ca-certificate <optional-public-ca-pem>
+
+bash scripts/test-collector-macos-package.sh \
+  --package artifacts/collector-macos-universal-v<version>.tar.gz
+```
+
 - 自签名 HTTPS 必须把公开证书随包分发并通过 `NODE_EXTRA_CA_CERTS` 信任；不得关闭 TLS 校验。
 - 公开 CA 域名不需要随包携带证书。
-- `.env` 中只能包含采集器所需的非秘密配置，不得放入数据库或 OSS 凭据。
-- `artifacts/`、本机 `data/`、浏览器画像和 `device-token.dpapi` 不得提交到 Git。
+- `collector.env` 中只能包含采集器所需的非秘密配置，不得放入数据库或 OSS 凭据。Windows 正式启动器还应内置这些非秘密值，不能因为隐藏点文件丢失而要求普通用户手工配置。
+- `artifacts/`、本机 `data/`、浏览器画像、`device-token.dpapi` 和 `device-token.keychain` 不得提交到 Git。
 - 新版本解压到同级新目录，通过 `../data` 复用本机状态；验证完成前保留旧版本以便回退。
-- 当前实现只支持 Windows DPAPI。没有完成 Keychain、启动器、签名和真机测试前，不得宣称支持 macOS。
+- Windows 使用 DPAPI 和 `device-token.dpapi`；macOS 使用 Keychain 和不含秘密的 `device-token.keychain` 标记。不得降级为明文令牌文件。
+- macOS 通用包由 `scripts/build-collector-macos.sh` 在 macOS 上构建，内含 Apple Silicon/Intel 两套运行时并自动选择；同一个包必须使用 `scripts/test-collector-macos-package.sh` 在两个架构真机分别验证。
+- macOS `.command` 团队内测包必须附 SHA256。没有完成对应架构真机测试前不得宣布正式可用；面向外部用户大规模分发前应制作 Developer ID 签名及 Apple 公证的 `.app`/`.dmg`。
 
 ## 生产运维
 
@@ -115,6 +128,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - `README.md`
 - `docs/product-manual.md`
 - `docs/collector-windows.md`
+- `docs/collector-macos.md`
 - `docs/operations/admin-guide.md`
 - `docs/operations/operator-guide.md`
 - `docs/operations/production-deployment.md`

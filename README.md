@@ -1,6 +1,6 @@
 # 抖音达人采集运营平台
 
-一个面向团队的抖音达人发现、证据筛选、人工复核与合作跟进平台。运营人员在自己的 Windows 电脑上人工启动采集，服务端负责共享任务、候选、证据、审计和协作状态。
+一个面向团队的抖音达人发现、证据筛选、人工复核与合作跟进平台。运营人员在自己的 Windows 或 macOS 电脑上人工启动采集，服务端负责共享任务、候选、证据、审计和协作状态。
 
 默认任务用于寻找 0–5000 粉丝、近 15 天存在万赞作品的潜在素人达人；所有规则均可按任务调整。年龄、素人属性和内容适配属于辅助判断，AI 不替代人工结论。
 
@@ -8,7 +8,7 @@
 
 - 团队登录、邀请、角色与设备授权。
 - 筛选任务、不可变规则快照和受控停止条件。
-- Windows 本机独立抖音画像、人工登录和人工开始。
+- Windows/macOS 本机独立抖音画像、人工登录和人工开始。
 - 达人、作品、观察历史、硬筛证据和私有截图。
 - 人工复核、负责人分配、联系信息与合作阶段。
 - 可选 AI 分析、版本历史、重试与降级。
@@ -21,7 +21,7 @@
 - Ubuntu/Docker：Nginx gateway、Web、API 和 worker。
 - 阿里云 RDS MySQL 8：业务数据、任务、审计和协作状态。
 - 阿里云私有 OSS：截图等证据对象。
-- Windows 采集助手：可见 Chrome、独立画像、本地持久队列和 DPAPI 设备令牌。
+- Windows/macOS 采集助手：可见 Chrome、独立画像、本地持久队列，以及 DPAPI/Keychain 设备令牌。
 
 采集必须由本机用户明确开始或继续。服务器创建运行、刷新页面或重启助手都不会远程操作抖音。
 
@@ -29,6 +29,7 @@
 
 - [产品使用手册](docs/product-manual.md)：管理员、运营人员和普通成员的完整使用流程。
 - [Windows 采集助手](docs/collector-windows.md)：安装、配对、升级和发布包验证。
+- [macOS 采集助手](docs/collector-macos.md)：架构选择、Keychain、启动、构建和真机验证。
 - [管理员手册](docs/operations/admin-guide.md)：成员、设备、AI、安全和交接。
 - [运营手册](docs/operations/operator-guide.md)：任务、采集、复核和合作跟进。
 - [本地开发](docs/local-development.md)：开发环境和端到端联调。
@@ -75,7 +76,7 @@ npm run test:e2e
 4. 在 `http://127.0.0.1:43127` 输入管理员生成的一次性配对码。
 5. 创建独立画像、人工登录抖音，再对已下发运行点击“人工开始”。
 
-用户不需要安装 Node、npm、Python 或编译工具。当前正式采集器只支持 Windows；macOS 需要 Keychain、启动器、签名和真机验证完成后才能发布。
+用户不需要安装 Node、npm、Python 或编译工具。macOS 通用团队内测包同时内置 Apple Silicon 和 Intel 运行时并自动选择，但两个架构仍必须分别完成真机冒烟和人工试运行。
 
 ## Windows 发布包
 
@@ -84,16 +85,33 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.0 `
+  -Version 0.1.3 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.0.zip
+  -PackagePath artifacts/collector-windows-v0.1.3.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
+
+## macOS 发布包
+
+在 macOS 构建机上生成同时兼容 Apple Silicon 和 Intel 的通用发布包，并在当前 Mac 验证对应运行时：
+
+```bash
+bash scripts/build-collector-macos.sh \
+  --version 0.1.3 \
+  --architecture universal \
+  --api-base-url 'https://106.12.56.109' \
+  --ca-certificate 'release/collector-server-ca.pem'
+
+bash scripts/test-collector-macos-package.sh \
+  --package 'artifacts/collector-macos-universal-v0.1.3.tar.gz'
+```
+
+通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。
 
 ## 生产部署
 

@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CollectorPairingError,
+  createPlatformSecretProtector,
   DeviceTokenStore,
+  MacOsKeychainProtector,
   pairAndStoreCollectorDevice,
   redactCollectorSecrets,
   WindowsDpapiProtector,
@@ -39,6 +41,52 @@ describe('采集器设备身份', () => {
 
     expect(ciphertext.equals(plaintext)).toBe(false);
     await expect(protector.unprotect(ciphertext)).resolves.toEqual(plaintext);
+  });
+
+  it('macOS 使用钥匙串保存令牌，秘密不会出现在进程参数或标记文件中', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' });
+    const calls: Array<{
+      arguments_: readonly string[];
+      executable: string;
+      standardInput: string | undefined;
+    }> = [];
+    let keychainSecret = '';
+    const runner = vi.fn(
+      async (executable: string, arguments_: readonly string[], standardInput?: string) => {
+        calls.push({ arguments_, executable, standardInput });
+        if (arguments_.includes('-i')) {
+          keychainSecret = standardInput?.match(/-w ([A-Za-z0-9_-]+)/u)?.[1] ?? '';
+          return '';
+        }
+        if (arguments_[0] === 'find-generic-password') return keychainSecret;
+        return '';
+      },
+    );
+
+    try {
+      const secretToken = 'mac-device-secret-token-that-must-never-leak';
+      const protector = new MacOsKeychainProtector('/Users/operator/douyin-data', runner);
+      const marker = await protector.protect(Buffer.from(secretToken, 'utf8'));
+
+      expect(marker.toString('utf8')).not.toContain(secretToken);
+      expect(JSON.stringify(calls[0]?.arguments_)).not.toContain(secretToken);
+      expect(calls[0]?.executable).toBe('/usr/bin/security');
+      await expect(protector.unprotect(marker)).resolves.toEqual(Buffer.from(secretToken, 'utf8'));
+    } finally {
+      Object.defineProperty(process, 'platform', { configurable: true, value: originalPlatform });
+    }
+  });
+
+  it('根据系统选择 DPAPI 或 macOS Keychain 及对应标记文件', () => {
+    expect(createPlatformSecretProtector('C:\\collector-data', 'win32')).toMatchObject({
+      filename: 'device-token.dpapi',
+      protector: expect.any(WindowsDpapiProtector),
+    });
+    expect(createPlatformSecretProtector('/Users/operator/douyin-data', 'darwin')).toMatchObject({
+      filename: 'device-token.keychain',
+      protector: expect.any(MacOsKeychainProtector),
+    });
   });
 
   it('配对后只返回设备 ID，并加密保存令牌', async () => {

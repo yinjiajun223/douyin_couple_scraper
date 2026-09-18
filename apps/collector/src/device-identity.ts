@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -43,6 +44,20 @@ export class WindowsDpapiUnavailableError extends Error {
   }
 }
 
+export class MacOsKeychainUnavailableError extends Error {
+  public constructor() {
+    super('macOS Keychain is required to store the collector device token.');
+    this.name = 'MacOsKeychainUnavailableError';
+  }
+}
+
+export class UnsupportedCollectorPlatformError extends Error {
+  public constructor(platform: NodeJS.Platform) {
+    super(`Collector device token storage is not supported on ${platform}.`);
+    this.name = 'UnsupportedCollectorPlatformError';
+  }
+}
+
 export class WindowsDpapiProtector implements SecretProtector {
   public async protect(plaintext: Buffer): Promise<Buffer> {
     this.assertWindows();
@@ -61,16 +76,110 @@ export class WindowsDpapiProtector implements SecretProtector {
   }
 }
 
-export class DeviceTokenStore {
-  private readonly tokenPath: string;
-  private cachedToken: string | undefined;
-  private loadingToken: Promise<string | null> | null = null;
+type ProcessRunner = (
+  executable: string,
+  arguments_: readonly string[],
+  standardInput?: string,
+) => Promise<string>;
+
+const MACOS_KEYCHAIN_SERVICE = 'cn.yinjiajun.douyin-ops.collector';
+const MACOS_KEYCHAIN_MARKER_VERSION = 'macos-keychain:v1';
+
+export class MacOsKeychainProtector implements SecretProtector {
+  private readonly account: string;
 
   public constructor(
     dataDirectory: string,
-    private readonly protector: SecretProtector = new WindowsDpapiProtector(),
+    private readonly runner: ProcessRunner = runProcess,
   ) {
-    this.tokenPath = path.join(path.resolve(dataDirectory), 'secrets', 'device-token.dpapi');
+    const identity = createHash('sha256').update(path.resolve(dataDirectory)).digest('hex');
+    this.account = `collector-${identity.slice(0, 32)}`;
+  }
+
+  public async protect(plaintext: Buffer): Promise<Buffer> {
+    this.assertMacOs();
+    const encodedSecret = plaintext.toString('base64url');
+    const command = [
+      'add-generic-password',
+      '-U',
+      '-a',
+      this.account,
+      '-s',
+      MACOS_KEYCHAIN_SERVICE,
+      '-w',
+      encodedSecret,
+    ].join(' ');
+    await this.runner('/usr/bin/security', ['-q', '-i'], `${command}\n`);
+    return Buffer.from(`${MACOS_KEYCHAIN_MARKER_VERSION}:${this.account}\n`, 'utf8');
+  }
+
+  public async unprotect(ciphertext: Buffer): Promise<Buffer> {
+    this.assertMacOs();
+    const marker = ciphertext.toString('utf8').trim();
+    if (marker !== `${MACOS_KEYCHAIN_MARKER_VERSION}:${this.account}`) {
+      throw new Error('The macOS Keychain device-token marker is invalid.');
+    }
+    const encodedSecret = await this.runner('/usr/bin/security', [
+      'find-generic-password',
+      '-a',
+      this.account,
+      '-s',
+      MACOS_KEYCHAIN_SERVICE,
+      '-w',
+    ]);
+    if (!encodedSecret.trim()) throw new Error('The macOS Keychain device token is empty.');
+    return Buffer.from(encodedSecret.trim(), 'base64url');
+  }
+
+  public async delete(): Promise<void> {
+    this.assertMacOs();
+    await this.runner('/usr/bin/security', [
+      'delete-generic-password',
+      '-a',
+      this.account,
+      '-s',
+      MACOS_KEYCHAIN_SERVICE,
+    ]);
+  }
+
+  private assertMacOs(): void {
+    if (process.platform !== 'darwin') throw new MacOsKeychainUnavailableError();
+  }
+}
+
+interface PlatformSecretProtector {
+  filename: string;
+  protector: SecretProtector;
+}
+
+export function createPlatformSecretProtector(
+  dataDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+): PlatformSecretProtector {
+  if (platform === 'win32') {
+    return { filename: 'device-token.dpapi', protector: new WindowsDpapiProtector() };
+  }
+  if (platform === 'darwin') {
+    return {
+      filename: 'device-token.keychain',
+      protector: new MacOsKeychainProtector(dataDirectory),
+    };
+  }
+  throw new UnsupportedCollectorPlatformError(platform);
+}
+
+export class DeviceTokenStore {
+  private readonly tokenPath: string;
+  private readonly protector: SecretProtector;
+  private cachedToken: string | undefined;
+  private loadingToken: Promise<string | null> | null = null;
+
+  public constructor(dataDirectory: string, protector?: SecretProtector) {
+    const selected = protector
+      ? { filename: 'device-token.dpapi', protector }
+      : createPlatformSecretProtector(dataDirectory);
+    this.protector = selected.protector;
+    this.tokenPath = path.join(path.resolve(dataDirectory), 'secrets', selected.filename);
   }
 
   public async save(token: string): Promise<void> {
@@ -193,5 +302,32 @@ function invokeDpapi(operation: 'Protect' | 'Unprotect', inputBase64: string): P
         );
     });
     child.stdin.end(inputBase64);
+  });
+}
+
+function runProcess(
+  executable: string,
+  arguments_: readonly string[],
+  standardInput = '',
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, [...arguments_], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.resume();
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.once('error', () => {
+      reject(new Error('Secure credential operation could not be started.'));
+    });
+    child.once('close', (code) => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`Secure credential operation failed (${code ?? 'unknown'}).`));
+    });
+    child.stdin.end(standardInput);
   });
 }
