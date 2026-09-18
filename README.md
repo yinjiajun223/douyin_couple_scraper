@@ -113,6 +113,12 @@ bash scripts/test-collector-macos-package.sh \
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。
 
+## 发布产物留存
+
+`artifacts/` 是本机构建目录，保持 Git 忽略；忽略不会删除本机文件，但这些大体积二进制不随源码仓库同步。需要长期保存和分发的 Windows ZIP、macOS TAR.GZ 及其 SHA256 必须上传到 GitHub Releases。
+
+仓库的 `Collector release` Actions 工作流会构建 Windows 包和 macOS 通用包，执行 Windows、macOS Intel、macOS Apple Silicon 三组冒烟门禁，全部通过后才发布对应版本的 Release。自动门禁不替代运营电脑上的真实配对、登录和小范围人工试运行。
+
 ## 生产部署
 
 生产使用固定版本容器镜像、TLS 反向代理、RDS 最小权限账号和私有 OSS。部署前必须执行在线预检；数据库迁移只向前执行，API/worker 不得使用迁移账号。

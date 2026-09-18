@@ -61,6 +61,8 @@ bash scripts/test-collector-macos-package.sh \
 
 自动测试通过后，还必须用一个真实的一次性配对码完成小范围人工试运行。面向不熟悉终端的外部用户大规模分发前，建议进一步制作 Developer ID 签名并经 Apple 公证的 `.app`/`.dmg`；当前 `.command` 包适用于已知来源、已核对 SHA256 的团队内分发。
 
+`artifacts/` 仅用于本机构建并保持 Git 忽略。仓库的 `Collector release` Actions 工作流会构建一个通用包，并让同一包依次通过 Intel 与 Apple Silicon 冒烟后上传到 GitHub Releases。CI 结果不能替代两个架构运营电脑上的真实配对、登录和人工试运行记录。
+
 ## 常见问题
 
 ### 双击后提示没有权限
