@@ -37,7 +37,7 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 cd /path/to/douyin_couple_scraper
 npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/build-collector-macos.sh \
-  --version 0.1.3 \
+  --version 0.1.4 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
@@ -54,7 +54,7 @@ bash scripts/build-collector-macos.sh \
 ```bash
 cd /path/to/douyin_couple_scraper
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.3.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.4.tar.gz'
 ```
 
 验证内容包括：包内 Node 可执行、Keychain 设备令牌往返、独立画像创建、可见 Chrome 启动和本地控制页。测试使用临时数据目录，结束时删除对应的测试钥匙串项目。若测试机暂时没有 Chrome，可以加 `--skip-visible-chrome` 做不完整检查，但该结果不能作为正式发布验收。

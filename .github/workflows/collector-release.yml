@@ -6,7 +6,7 @@ on:
       version:
         description: Collector version from apps/collector/package.json
         required: true
-        default: 0.1.3
+        default: 0.1.4
       api_base_url:
         description: Production HTTPS API base URL embedded in the packages
         required: true
@@ -40,6 +40,11 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/test-collector-windows-package.ps1 `
+            -PackagePath 'artifacts/collector-windows-v${{ inputs.version }}.zip'
+      - name: Smoke test Windows launcher
+        shell: powershell
+        run: |
+          ./scripts/test-collector-windows-launcher.ps1 `
             -PackagePath 'artifacts/collector-windows-v${{ inputs.version }}.zip'
       - uses: actions/upload-artifact@v4
         with:

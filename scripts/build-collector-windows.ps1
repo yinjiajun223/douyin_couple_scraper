@@ -1,5 +1,5 @@
 param(
-  [string]$Version = '0.1.3',
+  [string]$Version = '0.1.4',
   [string]$OutputDirectory = 'artifacts',
   [string]$NodeExecutable = '',
   [Parameter(Mandatory = $true)][string]$ApiBaseUrl,
@@ -50,6 +50,11 @@ $stageRoot = Join-Path $tempRoot $packageName
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
+}
+
+function Write-Utf8NoBomCrLf([string]$Path, [string]$Content) {
+  $normalizedContent = $Content -replace "`r?`n", "`r`n"
+  [IO.File]::WriteAllText($Path, $normalizedContent, [Text.UTF8Encoding]::new($false))
 }
 
 try {
@@ -132,20 +137,28 @@ COLLECTOR_CONTROL_PORT=43127
 
   $launcher = @"
 @echo off
+chcp 65001 >nul
 setlocal
 set "ROOT=%~dp0"
 set "NODE_ENV=production"
 set "COLLECTOR_API_BASE_URL=$normalizedApiBaseUrl"
 set "COLLECTOR_DATA_DIR=../data"
 set "COLLECTOR_CONTROL_PORT=43127"
+set "COLLECTOR_OPEN_CONTROL_PAGE=1"
 if exist "%ROOT%certs\server-ca.pem" set "NODE_EXTRA_CA_CERTS=%ROOT%certs\server-ca.pem"
 pushd "%ROOT%"
-start "Douyin Collector" "%ROOT%runtime\node.exe" --enable-source-maps "%ROOT%app\index.js"
-timeout /t 2 /nobreak >nul
-start "" "http://127.0.0.1:43127"
+"%ROOT%runtime\node.exe" --enable-source-maps "%ROOT%app\index.js"
+set "EXIT_CODE=%ERRORLEVEL%"
 popd
+if not "%EXIT_CODE%"=="0" (
+  echo.
+  echo 采集助手异常退出，错误代码：%EXIT_CODE%
+  echo 请保留本窗口中的错误信息并联系管理员。
+  pause
+)
+exit /b %EXIT_CODE%
 "@
-  Write-Utf8NoBom (Join-Path $stageRoot 'start-collector.cmd') $launcher
+  Write-Utf8NoBomCrLf (Join-Path $stageRoot 'start-collector.cmd') $launcher
 
   $smokeDirectory = Join-Path $stageRoot 'smoke'
   New-Item -ItemType Directory -Path $smokeDirectory -Force | Out-Null

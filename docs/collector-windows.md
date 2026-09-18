@@ -28,11 +28,14 @@
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.3.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.4.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.4.zip
 ```
 
 `CaCertificatePath` 只接受公开 CA/服务器证书，构建器会将它作为 `NODE_EXTRA_CA_CERTS` 随包分发，不得打包私钥。使用公开可信 CA 的域名时可以省略此参数。
 
 冒烟脚本在全新临时目录中使用包内 Node，验证 DPAPI 配对令牌、持久画像、可见 Chrome 启动以及本地控制页。测试数据完成后删除，不读取系统 Chrome/Edge 日常画像。
+
+启动器测试会真实运行 `start-collector.cmd`，确认 CMD 在采集器运行期间保持打开，且本地控制服务就绪。启动器不再使用固定延迟打开页面；采集器监听成功后才调用默认浏览器。若进程异常退出，CMD 会保留错误信息并等待用户确认。
 
 `artifacts/` 仅用于本机构建并保持 Git 忽略。正式分发包及 SHA256 应由仓库的 `Collector release` Actions 工作流上传到 GitHub Releases；不要把 ZIP 直接提交到源码历史，也不要只依赖某一台构建电脑长期保存。

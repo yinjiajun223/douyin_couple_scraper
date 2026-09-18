@@ -8,6 +8,7 @@ import {
   createCollectorControlServer,
   listenCollectorControlServer,
 } from './control-server.js';
+import { openCollectorControlPage } from './control-page-launcher.js';
 import { DeviceTokenStore } from './device-identity.js';
 import { CollectorRuntime } from './runtime.js';
 import { uploadScreenshotEvidence } from './media-upload.js';
@@ -110,12 +111,16 @@ async function start(): Promise<void> {
     profileStore,
   });
   await listenCollectorControlServer(server, config.COLLECTOR_CONTROL_PORT);
+  const controlUrl = `http://127.0.0.1:${config.COLLECTOR_CONTROL_PORT}`;
   console.log(
     JSON.stringify({
       ...collectorStatus(),
-      controlUrl: `http://127.0.0.1:${config.COLLECTOR_CONTROL_PORT}`,
+      controlUrl,
     }),
   );
+  if (process.env.COLLECTOR_OPEN_CONTROL_PAGE === '1') {
+    openCollectorControlPage(controlUrl);
+  }
 }
 
 if (process.env.NODE_ENV !== 'test') {

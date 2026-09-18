@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-version='0.1.3'
+version='0.1.4'
 output_directory='artifacts'
 api_base_url=''
 ca_certificate_path=''
@@ -14,7 +14,7 @@ usage() {
 Usage: ./scripts/build-collector-macos.sh [options]
 
 Options:
-  --version VERSION              Collector version (default: 0.1.3)
+  --version VERSION              Collector version (default: 0.1.4)
   --output-directory DIRECTORY  Repository-relative output directory (default: artifacts)
   --api-base-url URL             Preconfigure the HTTPS team API URL
   --ca-certificate PATH          Bundle a public CA/server certificate for a self-signed endpoint
@@ -252,6 +252,7 @@ fi
 if [[ -f "$root/certs/server-ca.pem" ]]; then
   export NODE_EXTRA_CA_CERTS="$root/certs/server-ca.pem"
 fi
+export COLLECTOR_OPEN_CONTROL_PAGE='1'
 cd "$root"
 case "$(uname -m)" in
   arm64) node_path="$root/runtime/arm64/node" ;;
@@ -267,7 +268,6 @@ if [[ ! -x "$node_path" ]]; then
   read -r -p '按回车键关闭…' _
   exit 1
 fi
-( sleep 2; open 'http://127.0.0.1:43127' ) &
 exec "$node_path" --enable-source-maps --env-file="$root/collector.env" "$root/app/index.js"
 EOF
 chmod 0755 "$stage_root/start-collector.command"

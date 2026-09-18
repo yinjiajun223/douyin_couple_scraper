@@ -85,13 +85,13 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.3 `
+  -Version 0.1.4 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.3.zip
+  -PackagePath artifacts/collector-windows-v0.1.4.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
@@ -102,13 +102,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```bash
 bash scripts/build-collector-macos.sh \
-  --version 0.1.3 \
+  --version 0.1.4 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
 
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.3.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.4.tar.gz'
 ```
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。
