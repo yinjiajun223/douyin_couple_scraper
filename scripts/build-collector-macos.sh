@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-version='0.1.4'
+version='0.1.5'
 output_directory='artifacts'
 api_base_url=''
 ca_certificate_path=''
@@ -14,7 +14,7 @@ usage() {
 Usage: ./scripts/build-collector-macos.sh [options]
 
 Options:
-  --version VERSION              Collector version (default: 0.1.4)
+  --version VERSION              Collector version (default: 0.1.5)
   --output-directory DIRECTORY  Repository-relative output directory (default: artifacts)
   --api-base-url URL             Preconfigure the HTTPS team API URL
   --ca-certificate PATH          Bundle a public CA/server certificate for a self-signed endpoint
