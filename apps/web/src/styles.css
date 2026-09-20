@@ -769,12 +769,6 @@ textarea:focus {
   color: var(--graphite);
   font-size: 12px;
 }
-.amber-heading {
-  border-bottom-color: var(--amber);
-}
-.amber-heading span {
-  color: var(--amber);
-}
 .human-heading {
   border-bottom-color: var(--signal);
 }
@@ -1551,177 +1545,6 @@ textarea:focus {
   }
 }
 
-.ai-settings-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(340px, 1.2fr);
-  gap: 24px;
-  align-items: start;
-  margin-top: 28px;
-}
-
-.ai-settings-layout .data-panel {
-  min-width: 0;
-  margin-top: 0;
-}
-
-.ai-connection-form,
-.connection-card {
-  padding: 24px;
-}
-
-.ai-connection-form {
-  gap: 14px;
-}
-.ai-connection-form .wide-action {
-  width: auto;
-  min-width: 180px;
-  justify-self: start;
-  padding-right: 24px;
-  padding-left: 24px;
-}
-
-.ai-connection-form h2,
-.connection-card h2 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.connection-fields {
-  display: grid;
-  min-width: 0;
-  gap: 18px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.connection-help {
-  margin: 0;
-  color: var(--graphite);
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.65;
-}
-
-.connection-capabilities {
-  min-width: 0;
-  margin: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--canvas);
-}
-
-.connection-capabilities legend {
-  padding: 0 5px;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.connection-capabilities .checkbox-line {
-  min-height: 44px;
-  cursor: pointer;
-}
-
-.connection-capabilities input[type='checkbox'] {
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  accent-color: var(--signal);
-  cursor: pointer;
-}
-
-.connection-feedback {
-  margin: 12px 0 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--canvas);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.connection-list,
-.ai-analysis-list {
-  display: grid;
-  gap: 14px;
-}
-
-.connection-card header,
-.ai-analysis-card header {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: start;
-}
-
-.connection-card code {
-  display: block;
-  margin: 16px 0;
-  overflow-wrap: anywhere;
-  color: var(--graphite);
-}
-
-.capability-grid,
-.ai-analysis-card dl {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin: 16px 0;
-}
-
-.capability-grid div,
-.ai-analysis-card dl div {
-  padding: 10px;
-  background: var(--canvas);
-}
-
-.capability-grid dt,
-.ai-analysis-card dt {
-  color: var(--graphite);
-  font-size: 12px;
-}
-
-.capability-grid dd,
-.ai-analysis-card dd {
-  margin: 4px 0 0;
-  font-weight: 700;
-}
-
-.checkbox-line {
-  display: flex !important;
-  align-items: center;
-  gap: 8px;
-}
-
-.checkbox-line input {
-  width: auto;
-}
-
-.ai-analysis-card {
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--signal);
-  background: var(--paper);
-}
-
-.ai-analysis-failed,
-.ai-analysis-unavailable {
-  border-left-color: var(--signal);
-}
-
-.ai-analysis-queued,
-.ai-analysis-running {
-  border-left-color: var(--amber);
-}
-
-.ai-risk {
-  color: var(--signal);
-}
-
 .muted-copy {
   color: var(--graphite);
 }
@@ -2159,8 +1982,7 @@ textarea:focus {
   font-size: 12px;
 }
 .workflow-form button,
-.candidate-detail-section button,
-.connection-card button {
+.candidate-detail-section button {
   min-height: 38px;
   padding: 8px 14px;
   border: 1px solid var(--line);
@@ -2172,8 +1994,7 @@ textarea:focus {
   font-weight: 600;
 }
 .workflow-form button:hover,
-.candidate-detail-section button:hover,
-.connection-card button:hover {
+.candidate-detail-section button:hover {
   background: #dfe7f2;
 }
 .workflow-form button[type='submit'] {
@@ -2369,9 +2190,6 @@ textarea:focus {
     grid-template-columns: 1fr;
     justify-items: center;
     text-align: center;
-  }
-  .ai-settings-layout {
-    grid-template-columns: 1fr;
   }
   .workflow-editor-grid {
     grid-template-columns: 1fr;

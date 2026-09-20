@@ -64,7 +64,7 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await bootstrapFirstAdmin(pool, { workspaceId, email, password, displayName: '流程验收员' });
     const apiUrl = await api.listen({ host: '127.0.0.1', port: 0 });
     const apiPaths =
-      /^\/(auth|campaigns|campaign-templates|candidates|runs|devices|members|dashboard|ai-connections|audit-events|media)(\/|$)/u;
+      /^\/(auth|campaigns|campaign-templates|candidates|runs|devices|members|dashboard|audit-events|media)(\/|$)/u;
     await page.route('http://127.0.0.1:4187/**', async (route) => {
       const url = new URL(route.request().url());
       if (!apiPaths.test(url.pathname)) return route.continue();

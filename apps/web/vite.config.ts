@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '^/(ai-connections|audit-events|auth|campaign-templates|campaigns|candidates|collector|dashboard|devices|health|invitations|media|members|runs)(/|\\?|$)':
+      '^/(audit-events|auth|campaign-templates|campaigns|candidates|collector|dashboard|devices|health|invitations|media|members|runs)(/|\\?|$)':
         {
           changeOrigin: true,
           secure: false,

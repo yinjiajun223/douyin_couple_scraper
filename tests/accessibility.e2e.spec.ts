@@ -4,7 +4,6 @@ import type { Page } from '@playwright/test';
 
 async function mockWorkspace(page: Page) {
   const responses: Record<string, unknown> = {
-    '/ai-connections': { connections: [] },
     '/audit-events': { events: [] },
     '/campaign-templates': { templates: [] },
     '/campaigns': { campaigns: [] },
