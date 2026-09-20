@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { aiScreeningResultSchema } from './ai.js';
 import {
   COLLECTOR_PROTOCOL_VERSION,
   assertCollectorProtocolCompatible,
@@ -18,7 +17,7 @@ describe('筛选规则契约', () => {
     const serialized = JSON.stringify(createDefaultCampaignRuleSet());
     const parsed = campaignRuleSetSchema.parse(JSON.parse(serialized));
 
-    expect(parsed.schemaVersion).toBe(1);
+    expect(parsed.schemaVersion).toBe(2);
     expect(parsed.hardRules).toContainEqual(
       expect.objectContaining({ type: 'follower-range', min: 0, max: 5_000 }),
     );
@@ -41,15 +40,11 @@ describe('筛选规则契约', () => {
     );
   });
 
-  it('接受合法的硬筛、AI 与人工规则组合', () => {
+  it('接受合法的硬筛与人工规则组合', () => {
     const value = createDefaultCampaignRuleSet();
     expect(
       parseCampaignRuleSet({
         ...value,
-        aiRules: [
-          ...value.aiRules,
-          { id: 'content-fit', kind: 'ai', type: 'content-fit', prompt: '偏好校园日常' },
-        ],
         manualChecks: [
           {
             id: 'brand-safety',
@@ -59,7 +54,24 @@ describe('筛选规则契约', () => {
           },
         ],
       }),
-    ).toEqual(expect.objectContaining({ schemaVersion: 1 }));
+    ).toEqual(expect.objectContaining({ schemaVersion: 2 }));
+  });
+
+  it('兼容旧 schema version 1 并剥离历史 AI 字段', () => {
+    const legacy = {
+      schemaVersion: 1,
+      hardRules: [{ id: 'followers', kind: 'hard', type: 'follower-range', min: 0, max: 5_000 }],
+      aiRules: [{ id: 'amateur-status', kind: 'ai', type: 'amateur-status' }],
+      manualChecks: [],
+      stopConditions: { maxFeedItems: 100 },
+      pacing: { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
+      aiLimits: { maximumCandidates: 30, concurrency: 1 },
+    };
+
+    const parsed = parseCampaignRuleSet(legacy);
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed).not.toHaveProperty('aiRules');
+    expect(parsed).not.toHaveProperty('aiLimits');
   });
 
   it('拒绝越界阈值、重复规则 ID 和未知人工类型', () => {
@@ -133,26 +145,5 @@ describe('Collector 协议契约', () => {
     expect(() => assertCollectorProtocolCompatible('1.8.0')).not.toThrow();
     expect(() => assertCollectorProtocolCompatible('2.0.0')).toThrow('不兼容');
     expect(() => assertCollectorProtocolCompatible('not-a-version')).toThrow('不兼容');
-  });
-});
-
-describe('AI 结构化结果契约', () => {
-  it('允许证据不足时明确返回 unknown', () => {
-    const result = aiScreeningResultSchema.parse({
-      schemaVersion: 1,
-      estimatedAge: {
-        status: 'unknown',
-        reason: '截图没有清晰人物画面',
-        confidence: 0,
-        evidence: [],
-      },
-      amateurStatus: { value: 'unknown', confidence: 0.1, evidence: [] },
-      contentTags: [],
-      suitability: { value: 'review', confidence: 0.2, evidence: [] },
-      riskFlags: [],
-      summary: '需要人工复核',
-    });
-
-    expect(result.estimatedAge.status).toBe('unknown');
   });
 });

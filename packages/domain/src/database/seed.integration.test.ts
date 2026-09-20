@@ -61,12 +61,8 @@ describeWithMysql('初始工作区种子', () => {
         }),
       ]),
     );
-    expect(rules.aiRules).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'estimated-age-band', minAge: 18, maxAge: 24 }),
-        expect.objectContaining({ type: 'amateur-status' }),
-      ]),
-    );
-    expect(rules.aiRules.some((rule) => rule.type === 'content-fit')).toBe(false);
+    expect(rules.manualChecks).toEqual([]);
+    expect(rules).not.toHaveProperty('aiRules');
+    expect(rules).not.toHaveProperty('aiLimits');
   });
 });

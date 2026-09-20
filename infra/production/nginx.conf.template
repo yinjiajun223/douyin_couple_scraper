@@ -42,7 +42,7 @@ server {
     include /etc/nginx/proxy_params;
   }
 
-  location ~ ^/(auth|invitations|devices|collector|audit-events|media|members|ai-connections|campaign-templates|campaigns|candidates|exports|runs|dashboard|health)(/|$) {
+  location ~ ^/(auth|invitations|devices|collector|audit-events|media|members|campaign-templates|campaigns|candidates|exports|runs|dashboard|health)(/|$) {
     limit_req zone=api_per_ip burst=30 nodelay;
     proxy_pass http://api:3000;
     include /etc/nginx/proxy_params;

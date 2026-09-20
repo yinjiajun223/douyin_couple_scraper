@@ -16,7 +16,6 @@ import { normalizeDouyinPostUrl, normalizeDouyinProfileUrl } from '@douyin/platf
 
 import type { DevicePrincipal } from '../auth/devices.js';
 import { evaluateHardFilters } from '../screening/hard-filter.js';
-import { scheduleAiScreeningJob } from '../ai/screening-scheduler.js';
 
 interface OwnedRunRow extends RowDataPacket {
   campaign_id: string;
@@ -330,14 +329,6 @@ async function ingestCreatorObservation(
       ],
     );
   }
-
-  await scheduleAiScreeningJob(connection, {
-    candidateId,
-    hardFilterStatus: hardFilter.outcome,
-    rules: run.rules_json,
-    runId: batch.runId,
-    workspaceId: device.workspaceId,
-  });
 
   return { observationId: observation.observationId, status: 'accepted' };
 }

@@ -11,7 +11,6 @@
 - 抖音登录、Cookie、验证码和浏览器画像只保存在运营人员本机。
 - 服务端不能远程启动采集，也不能替用户处理验证码。
 - 采集器不得自动点赞、关注、评论、私信、转发或点击“不感兴趣”。
-- AI 仅提供辅助判断，不能替代硬规则和人工结论。
 - 低可信度或缺失数据保持 `unknown`，不得按 0、失败或通过进行猜测。
 - 截图可以通过短期签名地址直传私有 OSS；不得上传完整视频或把 bucket 改为公开。
 
@@ -19,10 +18,10 @@
 
 - `apps/web`：React 管理后台。
 - `apps/api`：Fastify API、会话、权限和业务接口。
-- `apps/worker`：后台任务、AI 分析和素材清理。
+- `apps/worker`：后台任务和素材清理。
 - `apps/collector`：Windows 本机采集助手及本地控制页。
 - `packages/contracts`：跨端协议、规则和校验 schema。
-- `packages/domain`：数据库、鉴权、任务、候选、媒体和 AI 领域逻辑。
+- `packages/domain`：数据库、鉴权、任务、候选和媒体领域逻辑。
 - `packages/platform-douyin`：抖音页面解析和平台适配。
 - `infra/production`：生产 Compose、Nginx 和代理配置。
 - `scripts`：开发、迁移、预检、部署、回滚和发布包脚本。
@@ -54,7 +53,7 @@ npm run test:mysql
 npm run test:e2e
 ```
 
-不要假设自动化测试等同于真实抖音、真实 OSS 或真实 AI 厂商验收。真实发布前必须进行小范围人工试运行和证据抽查。
+不要假设自动化测试等同于真实抖音或真实 OSS 验收。真实发布前必须进行小范围人工试运行和证据抽查。
 
 ## TypeScript 与包边界
 
@@ -67,7 +66,7 @@ npm run test:e2e
 
 ## 配置与秘密
 
-- 不得提交或输出 `.env.production`、数据库密码、OSS Secret、AI key、会话令牌、设备令牌、Cookie 或私钥。
+- 不得提交或输出 `.env.production`、数据库密码、OSS Secret、会话令牌、设备令牌、Cookie 或私钥。
 - 可以检查单个非敏感配置是否存在或是否等于预期值，但不要打印完整环境文件。
 - 生产 RDS 必须启用 TLS 并验证 CA；禁止使用 `rejectUnauthorized=false`、`NODE_TLS_REJECT_UNAUTHORIZED=0` 或等效绕过。
 - RDS 业务账号只授予 DML，迁移账号按迁移需要授予 DDL；API/worker 不得使用迁移账号。
@@ -116,7 +115,7 @@ bash scripts/test-collector-macos-package.sh \
 
 - 生产主机只对外开放 80/443；API、worker、MySQL 和 Docker 管理端口不得公网暴露。
 - 部署前运行在线预检，确认 RDS TLS/权限、OSS ACL、证书文件和配置占位符。
-- `/health/live` 只代表进程存活；以 `/health/ready` 判断 MySQL、OSS 和可选 AI 状态。AI 未配置时允许 `degraded`，MySQL/OSS 不可用则不能视为就绪。
+- `/health/live` 只代表进程存活；以 `/health/ready` 判断 MySQL 和 OSS 状态。MySQL/OSS 不可用则不能视为就绪。
 - 修改证书、域名或网关时先备份、执行 `nginx -t`，再仅重建 gateway，并从公网客户端验证。
 - 中国大陆云主机使用域名时必须确认 ICP 备案以及当前云厂商的接入备案；证书签发成功不等于域名一定可访问。
 - 生产问题优先执行只读诊断。涉及删除、权限扩大、证书替换、数据库修复或回滚时，先确认精确目标和恢复路径。

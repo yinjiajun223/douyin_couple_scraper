@@ -11,7 +11,6 @@ import {
 const validInfrastructure = {
   NODE_ENV: 'test',
   DATABASE_URL: 'mysql://app_user:local-password@127.0.0.1:3306/douyin_ops',
-  CREDENTIAL_ENCRYPTION_KEY: 'k'.repeat(32),
   OSS_ENDPOINT: 'https://oss-cn-example.aliyuncs.com',
   OSS_REGION: 'oss-cn-example',
   OSS_BUCKET: 'douyin-private-evidence',
@@ -64,7 +63,7 @@ describe('分层环境配置', () => {
     expect(() =>
       parseWorkerConfig({
         ...validInfrastructure,
-        CREDENTIAL_ENCRYPTION_KEY: 'replace-me'.padEnd(32, '-'),
+        OSS_ACCESS_KEY_SECRET: 'replace-me'.padEnd(16, '-'),
       }),
     ).toThrow('不能使用示例或占位密钥');
   });

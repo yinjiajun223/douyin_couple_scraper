@@ -2,7 +2,7 @@
 
 一个面向团队的抖音达人发现、证据筛选、人工复核与合作跟进平台。运营人员在自己的 Windows 或 macOS 电脑上人工启动采集，服务端负责共享任务、候选、证据、审计和协作状态。
 
-默认任务用于寻找 0–5000 粉丝、近 15 天存在万赞作品的潜在素人达人；所有规则均可按任务调整。年龄、素人属性和内容适配属于辅助判断，AI 不替代人工结论。
+默认任务用于寻找 0–5000 粉丝、近 15 天存在万赞作品的潜在素人达人；所有规则均可按任务调整。素人属性和内容适配由人工复核判断，人工结论是最终业务判断。
 
 ## 能力概览
 
@@ -11,7 +11,6 @@
 - Windows/macOS 本机独立抖音画像、人工登录和人工开始。
 - 达人、作品、观察历史、硬筛证据和私有截图。
 - 人工复核、负责人分配、联系信息与合作阶段。
-- 可选 AI 分析、版本历史、重试与降级。
 - 审计记录、生产健康检查、备份恢复和发布回滚。
 
 系统不会自动点赞、关注、评论、私信、转发或点击“不感兴趣”。抖音 Cookie、验证码和浏览器画像只留在运营人员本机；截图通过短期签名地址直传私有 OSS，不上传完整视频。
@@ -30,7 +29,7 @@
 - [产品使用手册](docs/product-manual.md)：管理员、运营人员和普通成员的完整使用流程。
 - [Windows 采集助手](docs/collector-windows.md)：安装、配对、升级和发布包验证。
 - [macOS 采集助手](docs/collector-macos.md)：架构选择、Keychain、启动、构建和真机验证。
-- [管理员手册](docs/operations/admin-guide.md)：成员、设备、AI、安全和交接。
+- [管理员手册](docs/operations/admin-guide.md)：成员、设备、安全和交接。
 - [运营手册](docs/operations/operator-guide.md)：任务、采集、复核和合作跟进。
 - [本地开发](docs/local-development.md)：开发环境和端到端联调。
 - [生产部署](docs/operations/production-deployment.md)：RDS TLS、OSS、Compose、发布和回滚。
@@ -127,11 +126,11 @@ bash scripts/test-collector-macos-package.sh \
 sh scripts/deploy-production.sh .env.production
 ```
 
-`/health/ready` 会分别报告 MySQL、OSS 和可选 AI 状态。AI 未配置可以显示 `degraded`，但 MySQL 和 OSS 必须正常。中国大陆云服务器绑定域名前，还必须完成 ICP 备案和当前云厂商的接入备案；证书签发不代表域名已具备公网接入条件。
+`/health/ready` 会分别报告 MySQL 和 OSS 状态，两者都必须正常。中国大陆云服务器绑定域名前，还必须完成 ICP 备案和当前云厂商的接入备案；证书签发不代表域名已具备公网接入条件。
 
 ## 安全原则
 
-- 不提交或输出 `.env.production`、密码、OSS Secret、AI key、Cookie、会话令牌、设备令牌或私钥。
+- 不提交或输出 `.env.production`、密码、OSS Secret、Cookie、会话令牌、设备令牌或私钥。
 - RDS 强制 TLS 和 CA 校验；业务账号与迁移账号分离。
 - OSS bucket 保持 private，应用只使用最小权限。
 - 对外只开放 80/443，API、worker、MySQL 和 Docker 端口不直接暴露。

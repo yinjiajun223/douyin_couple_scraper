@@ -10,7 +10,6 @@ export type Permission =
   | 'outreach:read'
   | 'outreach:write'
   | 'device:manage'
-  | 'ai-connection:manage'
   | 'audit:read'
   | 'export:run';
 
@@ -25,7 +24,6 @@ export const ROLE_PERMISSIONS: Readonly<Record<WorkspaceRole, readonly Permissio
     'outreach:read',
     'outreach:write',
     'device:manage',
-    'ai-connection:manage',
     'audit:read',
     'export:run',
   ],

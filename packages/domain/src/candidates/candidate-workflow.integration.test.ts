@@ -95,23 +95,11 @@ describeWithMysql('manual review and outreach workflow', () => {
        VALUES (?, ?, ?, ?, ?, ?, 'pass')`,
       [candidateId, workspaceId, campaignId, creatorId, runId, observationId],
     );
-    await pool.execute(
-      `INSERT INTO ai_analysis_runs
-       (id, workspace_id, candidate_id, prompt_version, result_schema_version,
-        input_evidence_json, normalized_result_json, status, completed_at)
-       VALUES (?, ?, ?, 'test-v1', 1, '{}', ?, 'succeeded', CURRENT_TIMESTAMP(3))`,
-      [
-        '7a000000-0000-4000-8000-000000000009',
-        workspaceId,
-        candidateId,
-        JSON.stringify({ suitability: { value: 'recommended', confidence: 0.9 } }),
-      ],
-    );
   });
 
   afterAll(async () => pool.end());
 
-  it('manual decision overrides the business conclusion without changing AI evidence', async () => {
+  it('records the manual decision as the final business conclusion', async () => {
     await submitManualReview(pool, {
       actorRole: 'admin',
       actorUserId,
@@ -125,13 +113,6 @@ describeWithMysql('manual review and outreach workflow', () => {
     expect(workflow.reviews[0]).toMatchObject({
       decision: 'rejected',
       reason: '内容调性不适合本次应用推广',
-    });
-    const [aiRows] = await pool.query<RowDataPacket[]>(
-      'SELECT normalized_result_json FROM ai_analysis_runs WHERE candidate_id = ?',
-      [candidateId],
-    );
-    expect(aiRows[0]?.normalized_result_json).toMatchObject({
-      suitability: { value: 'recommended' },
     });
   });
 

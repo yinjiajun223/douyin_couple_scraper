@@ -68,7 +68,7 @@ export async function seedInitialWorkspace(
         campaignTemplateId,
         workspaceId,
         '默认素人爆款筛选',
-        '粉丝 0-5000、近 15 天至少一条万赞作品；年龄与素人属性由 AI 辅助，内容类型不限。',
+        '粉丝 0-5000、近 15 天至少一条万赞作品；素人属性与内容适配由人工复核判断，内容类型不限。',
         CAMPAIGN_RULE_SCHEMA_VERSION,
         JSON.stringify(createDefaultCampaignRuleSet()),
       ],

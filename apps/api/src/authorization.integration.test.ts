@@ -172,7 +172,7 @@ describeWithMysql('角色 API 权限矩阵', () => {
     };
     addProbe('/test/campaign-write', 'campaign:write', true);
     addProbe('/test/candidate-read', 'candidate:read', false);
-    addProbe('/test/ai-connection-manage', 'ai-connection:manage', true);
+    addProbe('/test/members-manage', 'members:manage', true);
     return server;
   }
 
@@ -191,15 +191,15 @@ describeWithMysql('角色 API 权限矩阵', () => {
     };
   }
 
-  it('管理员可管理系统连接，运营仅可写业务，只读仅可读', async () => {
+  it('管理员可管理系统成员，运营仅可写业务，只读仅可读', async () => {
     const server = await createAuthorizationServer();
     const admin = await login(server, 'admin');
     const operator = await login(server, 'operator');
     const readonly = await login(server, 'readonly');
 
-    const adminAi = await server.inject({
+    const adminMembers = await server.inject({
       method: 'POST',
-      url: '/test/ai-connection-manage',
+      url: '/test/members-manage',
       headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
     });
     const operatorCampaign = await server.inject({
@@ -207,9 +207,9 @@ describeWithMysql('角色 API 权限矩阵', () => {
       url: '/test/campaign-write',
       headers: { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken },
     });
-    const operatorAi = await server.inject({
+    const operatorMembers = await server.inject({
       method: 'POST',
-      url: '/test/ai-connection-manage',
+      url: '/test/members-manage',
       headers: { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken },
     });
     const readonlyRead = await server.inject({
@@ -254,9 +254,9 @@ describeWithMysql('角色 API 权限矩阵', () => {
       headers: { cookie: readonly.cookie },
     });
 
-    expect(adminAi.statusCode).toBe(204);
+    expect(adminMembers.statusCode).toBe(204);
     expect(operatorCampaign.statusCode).toBe(204);
-    expect(operatorAi.statusCode).toBe(403);
+    expect(operatorMembers.statusCode).toBe(403);
     expect(readonlyRead.statusCode).toBe(200);
     expect(readonlyWrite.statusCode).toBe(403);
     expect(readonlyOutreachWrite.statusCode).toBe(403);
@@ -272,7 +272,7 @@ describeWithMysql('角色 API 权限矩阵', () => {
     await server.close();
   });
 
-  it('候选列表、详情、导出、截图、AI 与写接口都拒绝跨运营访问', async () => {
+  it('候选列表、详情、导出、截图与写接口都拒绝跨运营访问', async () => {
     const server = buildServer({
       pool,
       logger: false,
@@ -357,13 +357,8 @@ describeWithMysql('角色 API 权限矩阵', () => {
         headers: csrfHeaders,
         payload: { body: '不应成功' },
       }),
-      server.inject({
-        method: 'POST',
-        url: `/candidates/${candidateId}/ai-analyses`,
-        headers: csrfHeaders,
-      }),
     ]);
-    expect(writeRequests.map((response) => response.statusCode)).toEqual([404, 404, 404, 404, 404]);
+    expect(writeRequests.map((response) => response.statusCode)).toEqual([404, 404, 404, 404]);
 
     const exported = await server.inject({
       method: 'GET',

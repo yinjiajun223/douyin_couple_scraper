@@ -2,7 +2,7 @@
 
 ## 日常与每周检查
 
-每日查看 `/health/ready`、容器重启、后台任务 `queued/retry/dead` 和磁盘使用。每周核对 RDS 连接/CPU、OSS 清理结果、证书剩余有效期、Docker 日志轮转和异常登录/设备审计。AI 故障是降级项；MySQL 或 OSS 故障会使 readiness 返回 503。
+每日查看 `/health/ready`、容器重启和磁盘使用。每周核对 RDS 连接/CPU、OSS 清理结果、证书剩余有效期、Docker 日志轮转和异常登录/设备审计。MySQL 或 OSS 故障会使 readiness 返回 503。
 
 生产发布、迁移和回滚按 `production-deployment.md`；RDS/OSS 备份及隔离恢复按 `backup-and-recovery.md`；2 核 4GB 验收按 `load-test.md`。发布镜像必须固定标签或 digest，先运行 `node scripts/preflight-production.mjs --env .env.production --live`，禁止跳过数据库权限、TLS、RDS 白名单和 OSS ACL 检查。
 
@@ -10,7 +10,7 @@
 
 1. API 503：读取 readiness 的 component，MySQL 检查 TLS、白名单、账号权限和连接数；OSS 检查 endpoint、RAM 权限和 private ACL。
 2. 网关 502：检查 API 容器和网关 upstream。替换或回滚 API 后必须强制重建 gateway，避免缓存旧容器地址。
-3. worker 堆积：先停止新增运行，检查 dead/retry 错误码和 AI 限流；确认租约会恢复后再重启 worker。2 核 4GB 默认并发保持 1。
+3. worker 异常：worker 只负责素材清理定时任务。检查清理日志和 OSS 连接，确认无未完成批次后再重启 worker。
 4. collector 离线：不要删除本地数据目录；恢复网络后让持久队列继续逐条确认。设备撤销或版本过低时需重新配对或升级。
 5. 素材缺失：沿素材 ID、观察 ID、运行 ID 查日志，核对 OSS object key、大小和 SHA-256。缺失时标记待人工补证，不伪造引用。
 6. 并发编辑冲突：让运营刷新候选后重做操作，不直接修改数据库版本号。

@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { z } from 'zod';
 
-import { CAMPAIGN_RULE_SCHEMA_VERSION, campaignRuleSetSchema } from '@douyin/contracts';
+import {
+  CAMPAIGN_RULE_SCHEMA_VERSION,
+  campaignRuleSetSchema,
+  parseCampaignRuleSet,
+} from '@douyin/contracts';
 import type { CampaignRuleSet } from '@douyin/contracts';
 
 import { writeAuditEvent } from '../audit/audit-events.js';
@@ -118,7 +122,7 @@ export async function createCampaign(pool: Pool, rawInput: unknown) {
   let rules = input.rules;
   if (input.templateId) {
     const template = await findTemplate(pool, input.workspaceId, input.templateId);
-    rules ??= campaignRuleSetSchema.parse(template.rules_json);
+    rules ??= parseCampaignRuleSet(template.rules_json);
   }
   if (!rules) throw new CampaignRecordNotFoundError('template');
 
@@ -157,7 +161,7 @@ export async function copyCampaign(
     name,
     recommendationProfileDescription: source.recommendation_profile_description,
     ...(source.source_template_id ? { templateId: source.source_template_id } : {}),
-    rules: campaignRuleSetSchema.parse(source.rules_json),
+    rules: parseCampaignRuleSet(source.rules_json),
   });
 }
 
@@ -166,7 +170,7 @@ export async function updateCampaignTemplate(pool: Pool, rawInput: unknown) {
   return withTransaction(pool, async (connection) => {
     const current = await findTemplate(connection, input.workspaceId, input.templateId, true);
     assertVersion(current.version, input.expectedVersion);
-    const rules = input.rules ?? campaignRuleSetSchema.parse(current.rules_json);
+    const rules = input.rules ?? parseCampaignRuleSet(current.rules_json);
     await connection.execute(
       `UPDATE campaign_templates
        SET name = ?, description = ?, rule_schema_version = ?, rules_json = ?, version = version + 1
@@ -197,7 +201,7 @@ export async function updateCampaign(pool: Pool, rawInput: unknown) {
   return withTransaction(pool, async (connection) => {
     const current = await findCampaign(connection, input.workspaceId, input.campaignId, true);
     assertVersion(current.version, input.expectedVersion);
-    const rules = input.rules ?? campaignRuleSetSchema.parse(current.rules_json);
+    const rules = input.rules ?? parseCampaignRuleSet(current.rules_json);
     await connection.execute(
       `UPDATE campaigns
        SET name = ?, recommendation_profile_description = ?, rule_schema_version = ?,

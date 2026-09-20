@@ -219,67 +219,6 @@ export {
   DEFAULT_MEDIA_RETENTION_DAYS,
 } from './media/media-cleanup.js';
 export type { MediaCleanupOptions, MediaCleanupSummary } from './media/media-cleanup.js';
-export {
-  AiProviderCapabilityError,
-  AiProviderRequestError,
-  AiProviderTimeoutError,
-  openAiChatCompletionsUrl,
-  OpenAiCompatibleProvider,
-} from './ai/provider.js';
-export type {
-  AiProvider,
-  AiProviderRequest,
-  AiProviderResponse,
-  OpenAiCompatibleProviderConfig,
-} from './ai/provider.js';
-export { CredentialCipher, CredentialKeyUnavailableError } from './ai/credential-cipher.js';
-export type { CredentialKeyringConfig, EncryptedCredential } from './ai/credential-cipher.js';
-export {
-  AiConnectionNotFoundError,
-  createAiConnection,
-  listAiConnections,
-  loadAiProviderConfig,
-  replaceAiConnectionCredential,
-  rotateAiConnectionEncryption,
-  testAiConnection,
-} from './ai/connection-service.js';
-export type { AiConnectionSummary } from './ai/connection-service.js';
-export { diagnoseAiProvider } from './ai/connection-diagnostics.js';
-export type {
-  AiCapabilityTestResult,
-  AiCapabilityTestStatus,
-  AiConnectionTestResult,
-} from './ai/connection-diagnostics.js';
-export {
-  AI_SCREENING_PROMPT_VERSION,
-  AI_SCREENING_RESULT_SCHEMA_VERSION,
-  aiScreeningJsonSchema,
-  buildAiScreeningPrompt,
-  InvalidAiScreeningOutputError,
-  parseAiScreeningResult,
-} from './ai/screening-prompt.js';
-export type { AiScreeningPrompt } from './ai/screening-prompt.js';
-export { scheduleAiScreeningJob } from './ai/screening-scheduler.js';
-export type { AiSchedulingResult } from './ai/screening-scheduler.js';
-export { buildMinimalAiInput } from './ai/minimal-input.js';
-export type { MinimalAiInput } from './ai/minimal-input.js';
-export {
-  AiAnalysisNotFoundError,
-  loadCandidateAiEvidence,
-  listAiAnalysisHistory,
-  queueAiReanalysis,
-  runAiAnalysis,
-} from './ai/analysis-service.js';
-export type { AiAnalysisHistoryItem, AiEvidenceBundle } from './ai/analysis-service.js';
-export {
-  claimBackgroundJob,
-  completeBackgroundJob,
-  enqueueBackgroundJob,
-  failBackgroundJob,
-  JobLeaseConflictError,
-  retryDelayMs,
-} from './jobs/job-queue.js';
-export type { BackgroundJob, JobStatus } from './jobs/job-queue.js';
 export { importLegacyExport, parseLegacyExport } from './legacy/legacy-import.js';
 export type { LegacyCreatorRecord, LegacyImportReport } from './legacy/legacy-import.js';
 export type {

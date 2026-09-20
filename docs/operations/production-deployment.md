@@ -29,6 +29,6 @@
 
 ## 日常检查
 
-- `/health/live` 只表示 API 进程可响应；`/health/ready` 分别报告 MySQL、OSS 和可选 AI 状态。MySQL/OSS 故障返回 503，AI 未配置或不可用为 `degraded` 但不阻断人工流程。
-- 每周确认磁盘、容器重启次数、RDS 连接数、后台任务 `queued/retry/dead` 数量与 OSS 清理任务结果。
-- 不记录 Cookie、Authorization、设备令牌、AI key、OSS key 或密码；这些字段由应用日志脱敏配置拦截。
+- `/health/live` 只表示 API 进程可响应；`/health/ready` 分别报告 MySQL 和 OSS 状态。MySQL/OSS 故障返回 503。
+- 每周确认磁盘、容器重启次数、RDS 连接数与 OSS 清理任务结果。
+- 不记录 Cookie、Authorization、设备令牌、OSS key 或密码；这些字段由应用日志脱敏配置拦截。

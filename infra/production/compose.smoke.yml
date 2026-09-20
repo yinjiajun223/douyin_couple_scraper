@@ -3,7 +3,6 @@ name: douyin-ops-smoke
 x-app-environment: &app-environment
   NODE_ENV: production
   DATABASE_URL: mysql://douyin_smoke:smoke-password@mysql:3306/douyin_ops
-  CREDENTIAL_ENCRYPTION_KEY: smoke-credential-encryption-key-32-characters
   OSS_ENDPOINT: https://oss-cn-hangzhou.aliyuncs.com
   OSS_REGION: cn-hangzhou
   OSS_BUCKET: private-smoke-bucket
@@ -58,8 +57,6 @@ services:
     environment:
       <<: *app-environment
       WORKER_ID: smoke-worker
-      WORKER_POLL_INTERVAL_MS: 2000
-      WORKER_CONCURRENCY: 1
       MEDIA_RETENTION_DAYS: 180
       MEDIA_CLEANUP_BATCH_SIZE: 100
       MEDIA_CLEANUP_INTERVAL_MS: 3600000

@@ -61,10 +61,7 @@ export function validateProductionEnvironment(environment) {
     errors.push('运行账号与迁移账号必须分离');
   }
 
-  const sessionSecret = checkSecret('SESSION_SECRET');
-  const encryptionKey = checkSecret('CREDENTIAL_ENCRYPTION_KEY');
-  if (sessionSecret && sessionSecret === encryptionKey)
-    errors.push('会话密钥与凭据加密密钥不能相同');
+  checkSecret('SESSION_SECRET');
 
   const ossEndpoint = requireValue('OSS_ENDPOINT');
   try {

@@ -20,8 +20,6 @@ export type {
   IngestionAcknowledgement,
   PostObservation,
 } from './collector.js';
-export { aiScreeningResultSchema } from './ai.js';
-export type { AiScreeningResult } from './ai.js';
 export {
   CAMPAIGN_RULE_SCHEMA_VERSION,
   campaignRuleSetSchema,

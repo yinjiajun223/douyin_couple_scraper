@@ -36,14 +36,14 @@ describeWithMysql('不可篡改审计事件', () => {
     await pool.end();
   });
 
-  it('账户、规则、设备、复核、合作、AI和导出动作走同一脱敏写入通道', async () => {
+  it('账户、规则、设备、复核、合作和导出动作走同一脱敏写入通道', async () => {
     const actions: AuditAction[] = [
       'account.invitation_created',
       'campaign.rules_updated',
       'device.paired',
       'candidate.reviewed',
       'outreach.status_changed',
-      'ai.connection_changed',
+      'device.token_rotated',
       'export.created',
     ];
     for (const [index, action] of actions.entries()) {
@@ -63,7 +63,7 @@ describeWithMysql('不可篡改审计事件', () => {
 
     const events = await listAuditEvents(pool, workspaceId, 50);
     expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(actions));
-    const event = events.find((item) => item.action === 'ai.connection_changed');
+    const event = events.find((item) => item.action === 'device.token_rotated');
     expect(event?.summary).toEqual({
       changed: true,
       password: '[REDACTED]',

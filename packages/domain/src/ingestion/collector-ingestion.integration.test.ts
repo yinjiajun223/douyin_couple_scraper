@@ -4,9 +4,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { COLLECTOR_PROTOCOL_VERSION, createDefaultCampaignRuleSet } from '@douyin/contracts';
 
 import { bootstrapFirstAdmin } from '../auth/bootstrap-admin.js';
-import { createAiConnection } from '../ai/connection-service.js';
-import { CredentialCipher } from '../ai/credential-cipher.js';
-import { listAiAnalysisHistory, queueAiReanalysis, runAiAnalysis } from '../ai/analysis-service.js';
 import type { DevicePrincipal } from '../auth/devices.js';
 import { archiveCampaign, createCampaign } from '../campaigns/campaign-service.js';
 import { getCandidateDetail } from '../candidates/candidate-library.js';
@@ -226,7 +223,7 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       expect.objectContaining({
         ruleKey: 'recent-viral-post',
         ruleVersion: 1,
-        ruleSnapshot: expect.objectContaining({ schemaVersion: 1 }),
+        ruleSnapshot: expect.objectContaining({ schemaVersion: 2 }),
         matchedPost: expect.objectContaining({
           likeCount: 11_000,
           likeCountRaw: '1.1万',
@@ -282,23 +279,8 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
     expect(Number(preservedFacts[0]?.audit_count)).toBeGreaterThanOrEqual(2);
   });
 
-  it('串联默认规则、OSS 证据、AI 建议与人工复核，并保留通过/失败/未知结论', async () => {
-    const aiCipher = CredentialCipher.fromSingleKey('s'.repeat(32));
-    const aiConnection = await createAiConnection(pool, aiCipher, {
-      actorUserId,
-      apiKey: 'integration-provider-key',
-      baseUrl: 'https://ai.example.test/v1',
-      label: '三态测试 AI',
-      model: 'integration-model',
-      supportsImages: true,
-      supportsJsonSchema: true,
-      workspaceId,
-    });
-    await pool.execute("UPDATE ai_connections SET status = 'enabled' WHERE id = ?", [
-      aiConnection.id,
-    ]);
+  it('串联默认规则、OSS 证据与人工复核，并保留通过/失败/未知结论', async () => {
     const configuredRules = createDefaultCampaignRuleSet();
-    configuredRules.aiLimits = { budgetCents: 10, concurrency: 2, maximumCandidates: 1 };
     const campaign = await createCampaign(pool, {
       workspaceId,
       actorUserId,
@@ -416,36 +398,12 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       }),
     ]);
 
-    const [aiJobs] = await pool.query<RowDataPacket[]>(
-      `SELECT jobs.payload_json, creators.platform_creator_id
-       FROM background_jobs jobs
-       JOIN campaign_candidates candidates
-         ON candidates.id = JSON_UNQUOTE(JSON_EXTRACT(jobs.payload_json, '$.candidateId'))
-       JOIN creators ON creators.id = candidates.creator_id
-       WHERE jobs.job_type = 'ai-screening'
-         AND JSON_UNQUOTE(JSON_EXTRACT(jobs.payload_json, '$.runId')) = ?`,
-      [run.id],
-    );
-    expect(aiJobs).toHaveLength(1);
-    expect(aiJobs[0]).toMatchObject({
-      platform_creator_id: 'candidate-pass',
-      payload_json: expect.objectContaining({
-        analysisId: expect.any(String),
-        budgetCents: 10,
-        concurrency: 2,
-      }),
-    });
-
-    const passCandidate = candidates.find(
-      (candidate) => candidate.platform_creator_id === 'candidate-pass',
-    )!;
     const [passCandidateRows] = await pool.query<RowDataPacket[]>(
       `SELECT candidates.id FROM campaign_candidates candidates
        JOIN creators ON creators.id = candidates.creator_id
        WHERE candidates.campaign_id = ? AND creators.platform_creator_id = 'candidate-pass'`,
       [campaign.id],
     );
-    expect(passCandidate).toBeDefined();
     const candidateId = passCandidateRows[0]!.id as string;
     const checksumSha256 = 'c'.repeat(64);
     let uploadedObjectKey = '';
@@ -478,67 +436,7 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       creatorObservationId: '25000000-0000-4000-8000-000000000001',
     });
     const mediaAccess = await issueMediaAccessUrl(pool, storage, adminAccess(), mediaUpload.id);
-    const loadEvidence = async () => ({
-      biography: '校园生活',
-      nickname: '三态候选 1',
-      posts: [{ caption: '校园爆款记录', sourceId: 'post-observation:pass' }],
-      rules: configuredRules,
-      selectedScreenshots: [
-        {
-          sourceId: `media:${mediaUpload.id}`,
-          url: mediaAccess.downloadUrl,
-        },
-      ],
-    });
-    let analysisSequence = 0;
-    const providerFactory = () => ({
-      complete: async () => ({
-        content: JSON.stringify({
-          amateurStatus: { confidence: 0.7, evidence: [], value: 'likely-amateur' },
-          contentTags: ['校园'],
-          estimatedAge: { confidence: 0, evidence: [], reason: '证据不足', status: 'unknown' },
-          riskFlags: [],
-          schemaVersion: 1,
-          suitability: { confidence: 0.6, evidence: [], value: 'review' },
-          summary: `分析版本 ${++analysisSequence}`,
-        }),
-        finishReason: 'stop',
-        model: 'integration-model',
-        requestId: `request-${analysisSequence}`,
-        usage: { completionTokens: 10, promptTokens: 20, totalTokens: 30 },
-      }),
-    });
-    await runAiAnalysis(
-      pool,
-      aiCipher,
-      workspaceId,
-      aiJobs[0]!.payload_json.analysisId as string,
-      loadEvidence,
-      providerFactory,
-    );
-    const reanalysis = await queueAiReanalysis(pool, {
-      actorRole: 'admin',
-      actorUserId,
-      candidateId,
-      workspaceId,
-    });
-    await runAiAnalysis(
-      pool,
-      aiCipher,
-      workspaceId,
-      reanalysis.analysisId,
-      loadEvidence,
-      providerFactory,
-    );
-    const history = await listAiAnalysisHistory(pool, workspaceId, candidateId);
-    expect(history).toHaveLength(2);
-    expect(history.map((item) => item.result?.summary)).toEqual(['分析版本 2', '分析版本 1']);
-    expect(JSON.stringify(history)).not.toContain('signature=short-lived');
-    expect(history[0]).toMatchObject({
-      model: 'integration-model',
-      promptVersion: 'douyin-screening-v1',
-      status: 'succeeded',
-    });
+    expect(new URL(mediaAccess.downloadUrl).host).toBe('private-oss.example');
 
     const [evaluations] = await pool.query<RowDataPacket[]>(
       `SELECT creators.platform_creator_id, evaluations.rule_key, evaluations.outcome,

@@ -6,7 +6,6 @@ import { readFileSync } from 'node:fs';
 const validEnvironment = {
   API_IMAGE: 'registry.local/douyin-api:2026.09.15-1',
   APP_DOMAIN: 'ops.example.cn',
-  CREDENTIAL_ENCRYPTION_KEY: 'e'.repeat(40),
   DATABASE_URL: 'mysql://douyin_app:password@rds.local:3306/douyin_ops?ssl-mode=REQUIRED',
   MIGRATION_DATABASE_URL:
     'mysql://douyin_migrator:password@rds.local:3306/douyin_ops?ssl-mode=REQUIRED',
@@ -35,7 +34,6 @@ describe('production preflight', () => {
   it('rejects public RDS access, plaintext transport, shared admin roles, weak secrets and public OSS', () => {
     const errors = validateProductionEnvironment({
       ...validEnvironment,
-      CREDENTIAL_ENCRYPTION_KEY: 'short',
       DATABASE_URL: 'mysql://root:password@rds.local:3306/douyin_ops',
       MIGRATION_DATABASE_URL: 'mysql://root:password@rds.local:3306/douyin_ops',
       OSS_BUCKET_PRIVATE: 'false',

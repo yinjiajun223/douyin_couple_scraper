@@ -10,8 +10,6 @@ import {
 } from '@douyin/contracts';
 import {
   acceptInvitation,
-  AiAnalysisNotFoundError,
-  AiConnectionNotFoundError,
   appendCandidateNote,
   archiveCampaign,
   archiveCampaignTemplate,
@@ -36,7 +34,6 @@ import {
   createCampaignTemplate,
   createCollectionRun,
   createInvitation,
-  createAiConnection,
   createMysqlPool,
   exportCandidateCsv,
   InvalidCredentialsError,
@@ -56,9 +53,7 @@ import {
   getCandidateDetail,
   getCandidateWorkflow,
   getOperationsDashboard,
-  listAiAnalysisHistory,
   listAuditEvents,
-  listAiConnections,
   listCampaigns,
   listCandidatePage,
   listCollectionRuns,
@@ -88,19 +83,16 @@ import {
   pauseCollectionRun,
   pauseCollectionRunByDevice,
   reportCollectionRunProgress,
-  queueAiReanalysis,
   resumeCollectionRun,
   resumeCollectionRunByDevice,
   revokeAllUserSessions,
   revokeDevice,
   revokeSession,
   rotateDeviceToken,
-  replaceAiConnectionCredential,
   RunProgressRegressionError,
   SESSION_TTL_SECONDS,
   startClaimedCollectionRun,
   submitManualReview,
-  testAiConnection,
   terminateCollectionRun,
   terminateCollectionRunByDevice,
   transitionCandidatePipeline,
@@ -108,15 +100,12 @@ import {
   updateCampaignTemplate,
   updateCandidateOutreach,
   AliyunObjectStorageClient,
-  CredentialCipher,
   OutreachVersionConflictError,
 } from '@douyin/domain';
 import type {
   DevicePrincipal,
   ObjectStorageClient,
   Permission,
-  AiProvider,
-  OpenAiCompatibleProviderConfig,
   SessionPrincipal,
 } from '@douyin/domain';
 import { runReadinessChecks } from './health.js';
@@ -125,8 +114,6 @@ import type { ReadinessChecks } from './health.js';
 const SESSION_COOKIE_NAME = 'douyin_session';
 
 export interface BuildServerOptions {
-  aiProviderFactory?: (config: OpenAiCompatibleProviderConfig) => AiProvider;
-  credentialCipher?: CredentialCipher;
   collectorMinVersion?: string;
   pool: Pool;
   logger?: boolean;
@@ -221,9 +208,7 @@ async function authorizeCollectorRequest(
 }
 
 export function buildServer({
-  aiProviderFactory,
   collectorMinVersion = '0.1.0',
-  credentialCipher,
   pool,
   logger = true,
   objectStorage,
@@ -679,88 +664,6 @@ export function buildServer({
     });
   });
 
-  server.get('/ai-connections', async (request, reply) => {
-    const principal = await authorizeBrowserRequest(pool, request, reply, 'ai-connection:manage');
-    if (!principal) return;
-    return { connections: await listAiConnections(pool, principal.workspaceId) };
-  });
-
-  server.post<{ Body: unknown }>('/ai-connections', async (request, reply) => {
-    const principal = await authorizeBrowserRequest(
-      pool,
-      request,
-      reply,
-      'ai-connection:manage',
-      true,
-    );
-    if (!principal) return;
-    if (!credentialCipher) return reply.code(503).send({ code: 'AI_CONFIG_UNAVAILABLE' });
-    try {
-      return reply.code(201).send(
-        await createAiConnection(pool, credentialCipher, {
-          ...(request.body as Record<string, unknown>),
-          actorUserId: principal.userId,
-          workspaceId: principal.workspaceId,
-        }),
-      );
-    } catch (error) {
-      return handleAiConnectionError(error, reply);
-    }
-  });
-
-  server.put<{ Body: unknown; Params: { connectionId: string } }>(
-    '/ai-connections/:connectionId/credential',
-    async (request, reply) => {
-      const principal = await authorizeBrowserRequest(
-        pool,
-        request,
-        reply,
-        'ai-connection:manage',
-        true,
-      );
-      if (!principal) return;
-      if (!credentialCipher) return reply.code(503).send({ code: 'AI_CONFIG_UNAVAILABLE' });
-      try {
-        const body = request.body as { apiKey?: unknown };
-        await replaceAiConnectionCredential(pool, credentialCipher, {
-          actorUserId: principal.userId,
-          apiKey: typeof body.apiKey === 'string' ? body.apiKey : '',
-          connectionId: request.params.connectionId,
-          workspaceId: principal.workspaceId,
-        });
-        return reply.code(204).send();
-      } catch (error) {
-        return handleAiConnectionError(error, reply);
-      }
-    },
-  );
-
-  server.post<{ Params: { connectionId: string } }>(
-    '/ai-connections/:connectionId/test',
-    async (request, reply) => {
-      const principal = await authorizeBrowserRequest(
-        pool,
-        request,
-        reply,
-        'ai-connection:manage',
-        true,
-      );
-      if (!principal) return;
-      if (!credentialCipher) return reply.code(503).send({ code: 'AI_CONFIG_UNAVAILABLE' });
-      try {
-        return await testAiConnection(
-          pool,
-          credentialCipher,
-          principal.workspaceId,
-          request.params.connectionId,
-          aiProviderFactory,
-        );
-      } catch (error) {
-        return handleAiConnectionError(error, reply);
-      }
-    },
-  );
-
   server.get('/devices', async (request, reply) => {
     const principal = await authorizeBrowserRequest(pool, request, reply, 'device:manage');
     if (!principal) return;
@@ -991,11 +894,6 @@ export function buildServer({
         );
         return {
           ...detail,
-          aiAnalyses: await listAiAnalysisHistory(
-            pool,
-            principal.workspaceId,
-            request.params.candidateId,
-          ),
           workflow: await getCandidateWorkflow(
             pool,
             {
@@ -1013,38 +911,6 @@ export function buildServer({
           error instanceof CandidateWorkflowNotFoundError
         ) {
           return reply.code(404).send({ code: 'CANDIDATE_NOT_FOUND' });
-        }
-        throw error;
-      }
-    },
-  );
-
-  server.post<{ Params: { candidateId: string } }>(
-    '/candidates/:candidateId/ai-analyses',
-    async (request, reply) => {
-      const principal = await authorizeBrowserRequest(
-        pool,
-        request,
-        reply,
-        'candidate:write',
-        true,
-      );
-      if (!principal) return;
-      try {
-        return reply.code(202).send(
-          await queueAiReanalysis(pool, {
-            actorRole: principal.role,
-            actorUserId: principal.userId,
-            candidateId: request.params.candidateId,
-            workspaceId: principal.workspaceId,
-          }),
-        );
-      } catch (error) {
-        if (error instanceof CandidateAccessDeniedError) {
-          return reply.code(404).send({ code: 'CANDIDATE_NOT_FOUND' });
-        }
-        if (error instanceof AiAnalysisNotFoundError) {
-          return reply.code(409).send({ code: 'AI_ANALYSIS_UNAVAILABLE' });
         }
         throw error;
       }
@@ -1476,16 +1342,6 @@ function handleMediaError(error: unknown, reply: FastifyReply) {
   throw error;
 }
 
-function handleAiConnectionError(error: unknown, reply: FastifyReply) {
-  if (error instanceof AiConnectionNotFoundError) {
-    return reply.code(404).send({ code: 'AI_CONNECTION_NOT_FOUND' });
-  }
-  if (error instanceof Error && error.name === 'ZodError') {
-    return reply.code(400).send({ code: 'INVALID_AI_CONNECTION' });
-  }
-  throw error;
-}
-
 function handleCandidateWorkflowError(error: unknown, reply: FastifyReply) {
   if (error instanceof CandidateWorkflowNotFoundError) {
     return reply.code(404).send({ code: 'CANDIDATE_WORKFLOW_NOT_FOUND' });
@@ -1519,22 +1375,8 @@ async function start() {
   });
   const server = buildServer({
     collectorMinVersion: config.COLLECTOR_MIN_VERSION,
-    credentialCipher: CredentialCipher.fromSingleKey(config.CREDENTIAL_ENCRYPTION_KEY),
     pool,
     readinessChecks: {
-      ai: {
-        check: async () => {
-          const [rows] = await pool.query(
-            "SELECT id FROM ai_connections WHERE status = 'enabled' LIMIT 1",
-          );
-          if (!Array.isArray(rows) || rows.length === 0) {
-            const error = new Error('No active AI connection is configured.');
-            error.name = 'AiNotConfigured';
-            throw error;
-          }
-        },
-        required: false,
-      },
       mysql: {
         check: async () => {
           await pool.query('SELECT 1');

@@ -18,7 +18,6 @@ export type AuditAction =
   | 'device.revoked'
   | 'candidate.reviewed'
   | 'outreach.status_changed'
-  | 'ai.connection_changed'
   | 'export.created';
 
 export interface WriteAuditEventInput {

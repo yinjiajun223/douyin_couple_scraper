@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-export const CAMPAIGN_RULE_SCHEMA_VERSION = 1 as const;
+export const CAMPAIGN_RULE_SCHEMA_VERSION = 2 as const;
+
+// 历史规则集（schema version 1）曾包含 AI 辅助字段 aiRules/aiLimits。
+// 平台已移除 AI 能力，但数据库中仍保留这些旧行，解析时需要兼容并升级。
+const LEGACY_CAMPAIGN_RULE_SCHEMA_VERSION = 1 as const;
 
 const followerRangeRuleSchema = z
   .object({
@@ -24,37 +28,6 @@ const recentPostLikesRuleSchema = z
     windowDays: z.number().int().min(1).max(365),
     minimumLikes: z.number().int().nonnegative().max(100_000_000_000),
     minimumMatchingPosts: z.number().int().min(1).max(100).default(1),
-  })
-  .strict();
-
-const ageBandRuleSchema = z
-  .object({
-    id: z.string().min(1),
-    kind: z.literal('ai'),
-    type: z.literal('estimated-age-band'),
-    minAge: z.number().int().min(13).max(100),
-    maxAge: z.number().int().min(13).max(100),
-  })
-  .strict()
-  .refine((value) => value.maxAge >= value.minAge, {
-    message: '年龄上限必须大于或等于下限',
-    path: ['maxAge'],
-  });
-
-const amateurStatusRuleSchema = z
-  .object({
-    id: z.string().min(1),
-    kind: z.literal('ai'),
-    type: z.literal('amateur-status'),
-  })
-  .strict();
-
-const contentFitRuleSchema = z
-  .object({
-    id: z.string().min(1),
-    kind: z.literal('ai'),
-    type: z.literal('content-fit'),
-    prompt: z.string().min(1).max(1_000),
   })
   .strict();
 
@@ -84,7 +57,6 @@ export const campaignRuleSetSchema = z
   .object({
     schemaVersion: z.literal(CAMPAIGN_RULE_SCHEMA_VERSION),
     hardRules: z.array(z.union([followerRangeRuleSchema, recentPostLikesRuleSchema])).min(1),
-    aiRules: z.array(z.union([ageBandRuleSchema, amateurStatusRuleSchema, contentFitRuleSchema])),
     manualChecks: z.array(manualCheckSchema),
     stopConditions: stopConditionsSchema,
     pacing: z
@@ -97,19 +69,10 @@ export const campaignRuleSetSchema = z
         message: '最大访问间隔必须大于或等于最小访问间隔',
         path: ['maximumDelayMs'],
       }),
-    aiLimits: z
-      .object({
-        maximumCandidates: z.number().int().nonnegative(),
-        concurrency: z.number().int().min(1).max(8),
-        budgetCents: z.number().int().nonnegative().optional(),
-      })
-      .strict(),
   })
   .strict()
   .superRefine((value, context) => {
-    const identifiers = [...value.hardRules, ...value.aiRules, ...value.manualChecks].map(
-      (rule) => rule.id,
-    );
+    const identifiers = [...value.hardRules, ...value.manualChecks].map((rule) => rule.id);
     if (new Set(identifiers).size !== identifiers.length) {
       context.addIssue({
         code: 'custom',
@@ -133,6 +96,13 @@ export function parseCampaignRuleSet(value: unknown): CampaignRuleSet {
     value && typeof value === 'object' && 'schemaVersion' in value
       ? (value as { schemaVersion: unknown }).schemaVersion
       : undefined;
+  if (receivedVersion === LEGACY_CAMPAIGN_RULE_SCHEMA_VERSION) {
+    const upgraded: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+    delete upgraded.aiRules;
+    delete upgraded.aiLimits;
+    upgraded.schemaVersion = CAMPAIGN_RULE_SCHEMA_VERSION;
+    return campaignRuleSetSchema.parse(upgraded);
+  }
   if (receivedVersion !== CAMPAIGN_RULE_SCHEMA_VERSION) {
     throw new UnsupportedCampaignRuleSchemaVersionError(receivedVersion);
   }
@@ -159,20 +129,6 @@ export function createDefaultCampaignRuleSet(): CampaignRuleSet {
         minimumMatchingPosts: 1,
       },
     ],
-    aiRules: [
-      {
-        id: 'estimated-age',
-        kind: 'ai',
-        type: 'estimated-age-band',
-        minAge: 18,
-        maxAge: 24,
-      },
-      {
-        id: 'amateur-status',
-        kind: 'ai',
-        type: 'amateur-status',
-      },
-    ],
     manualChecks: [],
     stopConditions: {
       maxFeedItems: 100,
@@ -182,10 +138,6 @@ export function createDefaultCampaignRuleSet(): CampaignRuleSet {
     pacing: {
       minimumDelayMs: 1_500,
       maximumDelayMs: 3_000,
-    },
-    aiLimits: {
-      maximumCandidates: 30,
-      concurrency: 1,
     },
   };
 }

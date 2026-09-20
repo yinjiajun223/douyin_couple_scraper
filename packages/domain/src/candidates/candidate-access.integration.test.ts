@@ -8,8 +8,6 @@ import { createMysqlPool, runMigrations } from '../database/migrations.js';
 import { seedInitialWorkspace } from '../database/seed.js';
 import { issueMediaAccessUrl, MediaObjectNotFoundError } from '../media/media-service.js';
 import type { ObjectStorageClient } from '../media/object-storage.js';
-import { queueAiReanalysis } from '../ai/analysis-service.js';
-import { CandidateAccessDeniedError } from './candidate-access.js';
 import { exportCandidateCsv } from './candidate-export.js';
 import {
   CandidateNotFoundError,
@@ -100,13 +98,13 @@ describeWithMysql('达人库成员数据范围', () => {
     await pool.execute(
       `INSERT INTO campaigns
        (id, workspace_id, name, rule_schema_version, rules_json, created_by_user_id)
-       VALUES (?, ?, '成员范围任务', 1, ?, ?)`,
+       VALUES (?, ?, '成员范围任务', 2, ?, ?)`,
       [campaignId, workspaceId, rules, adminUserId],
     );
     await pool.execute(
       `INSERT INTO campaign_rule_versions
        (id, workspace_id, campaign_id, version, rule_schema_version, rules_json, created_by_user_id)
-       VALUES (?, ?, ?, 1, 1, ?, ?)`,
+       VALUES (?, ?, ?, 1, 2, ?, ?)`,
       [ruleVersionId, workspaceId, campaignId, rules, adminUserId],
     );
 
@@ -304,9 +302,6 @@ describeWithMysql('达人库成员数据范围', () => {
     await expect(
       appendCandidateNote(pool, { ...accessA(), body: '越权备注', candidateId: candidateB }),
     ).rejects.toBeInstanceOf(CandidateWorkflowNotFoundError);
-    await expect(
-      queueAiReanalysis(pool, { ...accessA(), candidateId: candidateB }),
-    ).rejects.toBeInstanceOf(CandidateAccessDeniedError);
 
     const exported = await exportCandidateCsv(pool, {
       ...accessA(),
