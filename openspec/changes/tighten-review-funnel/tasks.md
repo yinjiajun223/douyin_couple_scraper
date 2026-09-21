@@ -11,11 +11,12 @@
 
 ## 2. 复核即推进阶段（domain + api，阶段 A）
 
-- [ ] 2.1 修改 `packages/domain/src/candidates/candidate-workflow.ts` 的 `submitManualReview`（:148-190）：在同一事务内依次执行 `assertCandidateVersion`（:490-494）→ INSERT `manual_reviews` → 仅当 `pipeline_status === 'pending_review'` 且 `decision !== 'pending'` 时更新为 `approved ? 'to_contact' : 'unsuitable'` 并 `appendCandidateEvent('pipeline_status_changed')` → `appendCandidateEvent('manual_reviewed')` → 写 `candidate.reviewed` 审计 → `version` 只递增一次。验证：`npm run typecheck -w @douyin/domain` 通过。
-- [ ] 2.2 在 `packages/domain/src/candidates/candidate-workflow.integration.test.ts` 补自动流转用例：`pending_review` + approved → `to_contact`、`pending_review` + rejected → `unsuitable`、`pending_review` + pending → 阶段不变、非 `pending_review` + approved → 记录结论但阶段不变且不报错、版本不匹配 → 冲突错误且 `manual_reviews` / `candidate_events` / `pipeline_status` / `version` 全部无变化。验证：`npm run test:mysql` 通过。
-- [ ] 2.3 在同一文件补单版本递增与事件顺序断言：一次成功提交后 `version` 恰好 +1，`candidate_events` 按序含 `pipeline_status_changed`（仅推进时）与 `manual_reviewed`，审计表含一条 `candidate.reviewed`。验证：`npm run test:mysql` 通过。
-- [ ] 2.4 在同一文件补回滚用例：在写审计前注入失败，断言 `manual_reviews`、`candidate_events`、`pipeline_status`、`version` 均未被修改。验证：`npm run test:mysql` 通过。
-- [ ] 2.5 更新 `apps/api/src/server.ts` 的复核路由（:920）响应体，返回推进后的 `pipelineStatus` 与 `version`；在 `apps/api/src/authorization.integration.test.ts` 或就近的候选集成测试中断言响应与数据库一致。验证：`npm run test:mysql` 通过，`npm run typecheck -w @douyin/api` 通过。
+- [x] 2.1 修改 `packages/domain/src/candidates/candidate-workflow.ts` 的 `submitManualReview`（:148-190）：在同一事务内依次执行 `assertCandidateVersion`（:490-494）→ INSERT `manual_reviews` → 仅当 `pipeline_status === 'pending_review'` 且 `decision !== 'pending'` 时更新为 `approved ? 'to_contact' : 'unsuitable'` 并 `appendCandidateEvent('pipeline_status_changed')` → `appendCandidateEvent('manual_reviewed')` → 写 `candidate.reviewed` 审计 → `version` 只递增一次。验证：`npm run typecheck -w @douyin/domain` 通过。
+- [x] 2.2 在 `packages/domain/src/candidates/candidate-workflow.integration.test.ts` 补自动流转用例：`pending_review` + approved → `to_contact`、`pending_review` + rejected → `unsuitable`、`pending_review` + pending → 阶段不变、非 `pending_review` + approved → 记录结论但阶段不变且不报错、版本不匹配 → 冲突错误且 `manual_reviews` / `candidate_events` / `pipeline_status` / `version` 全部无变化。验证：`npm run test:mysql` 通过。
+- [x] 2.3 在同一文件补单版本递增与事件断言：一次成功提交后 `version` 恰好 +1，`candidate_events` 恰好含 `pipeline_status_changed`（仅推进时）与 `manual_reviewed` 两条，审计表含一条 `candidate.reviewed`。**实施修正**：`candidate_events` 只有毫秒级 `created_at` 与随机 UUID 主键（`0004_candidate_decisions.sql:147-163`），同一事务内写入的两条事件在 `ORDER BY created_at DESC, id DESC` 下没有可依赖的先后次序，因此断言两条事件的存在与内容，不断言其相对顺序；不为排序新增序列列（超出本次范围）。验证：`npm run test:mysql` 通过。
+- [x] 2.4 在同一文件补回滚用例：在写审计前注入失败，断言 `manual_reviews`、`candidate_events`、`pipeline_status`、`version` 均未被修改。验证：`npm run test:mysql` 通过。
+- [x] 2.5 更新 `apps/api/src/server.ts` 的复核路由（:920）响应体，返回推进后的 `pipelineStatus` 与 version。**实施修正**：该路由本就透传 `submitManualReview` 的返回值，domain 增加 `pipelineStatus` 后无需改动 server.ts；改为在 `apps/api/src/ingestion.integration.test.ts` 的闸门用例末尾断言响应体与数据库一致。验证：`npm run test:mysql` 通过，`npm run typecheck -w @douyin/api` 通过。
+- [x] 2.6 连带修正 `packages/domain/src/ingestion/collector-ingestion.integration.test.ts` 的复核链路：原先「复核 → 显式推进到 `to_contact`」在自动推进后会变成 `to_contact → to_contact`（不在流转矩阵内），改为断言复核自身已推进到 `to_contact`（version 2），再显式推进到 `contacted`（version 3）。验证：domain 集成套件全绿。
 
 ## 3. 未入库达人的判定依据（domain + api + web）
 
@@ -30,7 +31,8 @@
 - [ ] 4.3 将 `apps/web/src/pages/CandidatesPage.tsx` 的 `candidateSection`（:39）由 `'qualified' | 'needs_evidence'` 改为五个 pipeline 分区（待复核 / 待联系 / 跟进中 = contacted + communicating / 已合作 / 不合适 = unsuitable + declined），移除「证据不足」分区及其文案。验证：`npm run typecheck -w @douyin/web` 通过，`grep -rn "needs_evidence\|证据不足" apps/web/src` 无结果。
 - [ ] 4.4 从 `CandidatesPage.tsx` 的查询构造（:60）移除 `hardFilterStatus`，并修改 `apps/web/src/lib/date.ts` 的 `candidateMatchesLibraryView`（:27-36）去掉硬筛判断、改为按分区对应的 pipeline 集合匹配。验证：`npm run typecheck -w @douyin/web` 通过，`grep -rn "hardFilterStatus" apps/web/src` 无结果。
 - [ ] 4.5 保持 `groupCandidatesByDate`（`apps/web/src/lib/date.ts:39-55`）与日期筛选选项完全不动。验证：`grep -n "Asia/Shanghai" apps/web/src/lib/date.ts` 仍命中，`npm run build -w @douyin/web` 通过，浏览器中确认「今天 / 昨天 / 近 7 天 / 近 30 天 / 自定义」分组与分页行为与改动前一致。
-- [ ] 4.6 浏览器走查五个分区：新建一次采集运行后确认只有 pass 达人出现在「待复核」，点击复核通过该达人自动出现在「待联系」，点击不通过则出现在「不合适」，且工作台三个计数器与达人库分区数字一致。验证：走查记录写入本 change 的实施备注，截图不入仓。
+- [ ] 4.6 让 `CandidatesPage.tsx` 的 `submitWorkflowRequest`（:367-397）在成功后刷新数据：重新拉取该达人详情（`openCandidate`）并重新加载当前分区列表（给 :73-101 的 `useEffect` 加一个刷新令牌依赖）。**为什么必须做**：复核现在会在同一次请求内推进阶段并递增版本，而当前实现提交后不重新拉取，详情面板会同时显示过期的阶段与过期的 `candidateVersion`，运营紧接着的第二次操作必然 409。验证：`npm run typecheck -w @douyin/web` 通过，浏览器中提交复核后面板阶段与列表分区立即更新，且无需手动刷新即可连续操作。
+- [ ] 4.7 浏览器走查五个分区：新建一次采集运行后确认只有 pass 达人出现在「待复核」，点击复核通过该达人自动出现在「待联系」，点击不通过则出现在「不合适」，且工作台三个计数器与达人库分区数字一致。验证：走查记录写入本 change 的实施备注，截图不入仓。
 
 ## 5. 孤儿截图回收（worker + domain，阶段 C，开关默认关闭）
 

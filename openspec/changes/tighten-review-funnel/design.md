@@ -92,7 +92,9 @@
 
 **为什么不满足条件时不报错**：`manual_reviews` 是 append-only 的历史证据轴，`pipeline_status` 是当前状态轴。运营已手动推进后他人补交结论，应被记录而非拒绝。这与 `creator-review-and-outreach` 的「补充复核结论不覆盖历史」场景一致。
 
-**为什么单版本递增**：两次递增会让前端的乐观锁在一次用户操作中失效两次，产生难以解释的冲突提示。
+**为什么单版本递增**：两次递增会让前端的乐观锁在一次用户操作中失效两次，产生难以解释的冲突提示。实现上合并为一条 `UPDATE campaign_candidates SET pipeline_status = COALESCE(?, pipeline_status), version = version + 1`，推进与递增不可能只做一半。
+
+**事件顺序不可观测**：上面的写入次序（先 `pipeline_status_changed` 后 `manual_reviewed`）在数据库里无法被还原 —— `candidate_events` 只有毫秒级 `created_at` 与随机 UUID 主键（`0004_candidate_decisions.sql:147-163`），而 `getCandidateWorkflow` 按 `created_at DESC, id DESC` 排序，同一事务内的两条事件几乎必然同毫秒，先后由随机 UUID 决定。这不构成正确性问题（两条事件同属一个原子操作，UI 历史里谁先谁后都不改变事实），因此不为排序新增序列列，测试也只断言两条事件的存在与内容。
 
 **`decision = 'pending'` 的处理**：记录结论但不推进阶段（矩阵中没有指向 `pending_review` 自身的转换，且「待定」语义就是保持待复核）。
 
