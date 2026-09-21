@@ -44,20 +44,23 @@
 - `creator-review-and-outreach`: 复核与归档支持批量提交；明确采集事实字段不可编辑、可编辑运营字段的范围与既有入口。
 - `internal-access-control`: 成员停用 / 启用、角色变更、邀请列表与撤销；最后管理员与自我停用护栏；停用对会话与设备的级联效果。
 
-> 排序依赖：`openspec/specs/` 目前为空，上述三个 capability 仅以 delta 形式存在于尚未归档的 `build-douyin-influencer-ops-platform`（90/94）。该 change 应先归档，使 delta 落入主 specs，本 change 的 delta 才有可修改的基线。
+> 基线已就绪：上述三个 capability 的主 specs 已从 `build-douyin-influencer-ops-platform` 的 delta 同步到 `openspec/specs/`（该 change 仍有四项真实环境验收未完成，故保持未归档），本 change 的 MODIFIED delta 有可修改的基线。
+>
+> 实施顺序依赖：本 change 的批量复核复用 `tighten-review-funnel` 引入的「复核即推进 pipeline」语义，应在其之后实施。
 
 ## Impact
 
 **服务端（packages/domain）**
 - `src/candidates/candidate-library.ts` — 补 `archived_at IS NULL` 过滤；新增归档视图、标签写入、批量操作的领域函数。
 - `src/candidates/candidate-workflow.ts` — 批量复核复用单条推进语义；归档 / 取消归档写 `candidate_events`。
-- `src/auth/sessions.ts` — 已有 `disableUserAccount`，需补启用成员的反向操作。
-- `src/auth/directory.ts` — 角色变更、邀请列表与撤销。
-- `src/audit/audit-events.ts` — `AuditAction` 联合类型需扩展（如 `candidate.archived`、`account.role_changed`、`account.enabled`、`account.invitation_revoked`）。
+- `src/auth/sessions.ts` — 已有 `disableUserAccount`（:195-238），需补启用成员的反向操作，并修正其审计 actor：当前写的是 `actorUserId: userId`（被停用者本人，:224），应为执行操作的管理员。
+- `src/auth/directory.ts` — 角色变更、邀请列表与撤销（该文件目前只有两个只读查询）。
+- `src/auth/invitations.ts` — 目前只有 `createInvitation` / `acceptInvitation`，需补列表与撤销。
+- `src/audit/audit-events.ts` — `AuditAction` 联合类型需扩展（如 `candidate.archived`、`candidate.unarchived`、`candidate.tags_changed`、`account.role_changed`、`account.enabled`、`account.invitation_revoked`）。
 
 **数据库**
-- 需要一次**向前迁移**：`audit_events` 的 action 取值若有 CHECK 约束需放宽；标签写入若缺索引需补。**不修改任何已执行过的迁移文件，不删除生产数据**，遵守 expand/contract。
-- `archived_at` 列已存在，无需 DDL。
+- 只需**一次向前迁移**：给 `invitations` 增加撤销标记列（现无该列，`0001_access.sql:40-58`）。不修改任何已执行过的迁移文件，不删除生产数据，遵守 expand/contract。
+- 以下均**无需 DDL**（勘查确认）：`audit_events.action` 与 `candidate_events.event_type` 都是无 CHECK 约束的 `VARCHAR(100)`，新增取值只是 TypeScript 联合类型扩展；`tags` / `candidate_tags` 的 `uq_tags_workspace_name`、主键 `(candidate_id, tag_id)` 与 `idx_candidate_tags_tag` 已覆盖按名 upsert、按候选读写与按标签筛选；`campaign_candidates.archived_at` 已存在（`0004:12`）。
 
 **API（apps/api）**
 - `src/server.ts` — 新增归档 / 取消归档、批量复核、批量归档、标签写入、成员停用 / 启用、成员改角色、邀请列表 / 撤销路由。单文件已承载全部路由，需评估是否拆分。
