@@ -518,24 +518,25 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       reason: '人工核对公开主页与爆款证据后通过',
       workspaceId,
     });
+    expect(review).toMatchObject({ pipelineStatus: 'to_contact', version: 2 });
     const pipeline = await transitionCandidatePipeline(pool, {
       actorRole: 'admin',
       actorUserId,
       candidateId,
       expectedVersion: review.version,
-      nextStatus: 'to_contact',
-      note: '进入待联系池',
+      nextStatus: 'contacted',
+      note: '已发出首次联系',
       workspaceId,
     });
     const detail = await getCandidateDetail(pool, adminAccess(), candidateId);
     const workflow = await getCandidateWorkflow(pool, adminAccess(), candidateId);
-    expect(pipeline).toMatchObject({ status: 'to_contact', version: 3 });
+    expect(pipeline).toMatchObject({ status: 'contacted', version: 3 });
     expect(detail.media).toContainEqual(
       expect.objectContaining({ id: mediaUpload.id, purpose: 'profile_screenshot' }),
     );
     expect(workflow).toMatchObject({
       candidateVersion: 3,
-      pipelineStatus: 'to_contact',
+      pipelineStatus: 'contacted',
       reviews: [expect.objectContaining({ decision: 'approved' })],
     });
   });

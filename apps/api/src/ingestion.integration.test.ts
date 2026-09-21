@@ -238,7 +238,7 @@ describeWithMysql('Collector 批量观察 ingestion API', () => {
     await server.close();
   });
 
-  it('硬筛未通过与数据未知的观察仍返回 accepted，只是不建立候选', async () => {
+  it('硬筛未通过与数据未知的观察仍返回 accepted，只有通过的达人入库并在复核后自动推进', async () => {
     const server = buildServer({ pool, logger: false, secureCookies: true });
     const login = await server.inject({
       method: 'POST',
@@ -363,7 +363,7 @@ describeWithMysql('Collector 批量观察 ingestion API', () => {
       evaluation_count: 2,
     });
     const [admitted] = await pool.query<RowDataPacket[]>(
-      `SELECT creators.platform_creator_id, candidates.hard_filter_status
+      `SELECT candidates.id, creators.platform_creator_id, candidates.hard_filter_status
        FROM campaign_candidates candidates
        JOIN creators ON creators.id = candidates.creator_id
        WHERE candidates.latest_run_id = ?`,
@@ -375,6 +375,21 @@ describeWithMysql('Collector 批量观察 ingestion API', () => {
         hard_filter_status: 'pass',
       }),
     ]);
+
+    // 复核路由透传 domain 返回值，这里锁定响应体带上推进后的阶段与版本，且与数据库一致。
+    const review = await server.inject({
+      method: 'POST',
+      url: `/candidates/${admitted[0]!.id as string}/reviews`,
+      headers: browserHeaders,
+      payload: { decision: 'approved', expectedVersion: 1, reason: null },
+    });
+    expect(review.statusCode).toBe(201);
+    expect(review.json()).toMatchObject({ pipelineStatus: 'to_contact', version: 2 });
+    const [afterReview] = await pool.query<RowDataPacket[]>(
+      'SELECT pipeline_status, version FROM campaign_candidates WHERE id = ?',
+      [admitted[0]!.id as string],
+    );
+    expect(afterReview[0]).toMatchObject({ pipeline_status: 'to_contact', version: 2 });
 
     await server.close();
   });

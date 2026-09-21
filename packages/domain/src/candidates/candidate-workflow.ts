@@ -166,10 +166,31 @@ export async function submitManualReview(pool: Pool, rawInput: unknown) {
         candidate.version,
       ],
     );
+    // 只有「待复核」起点才自动推进：该起点到 to_contact / unsuitable 都在既有流转矩阵内，
+    // 其他阶段补交结论只记录历史、不改当前状态。
+    const advancedStatus: PipelineStatus | null =
+      candidate.pipeline_status === 'pending_review' && input.decision !== 'pending'
+        ? input.decision === 'approved'
+          ? 'to_contact'
+          : 'unsuitable'
+        : null;
     await connection.execute(
-      'UPDATE campaign_candidates SET version = version + 1 WHERE workspace_id = ? AND id = ?',
-      [input.workspaceId, input.candidateId],
+      `UPDATE campaign_candidates
+       SET pipeline_status = COALESCE(?, pipeline_status), version = version + 1
+       WHERE workspace_id = ? AND id = ?`,
+      [advancedStatus, input.workspaceId, input.candidateId],
     );
+    if (advancedStatus) {
+      await appendCandidateEvent(connection, {
+        actorUserId: input.actorUserId,
+        candidateId: input.candidateId,
+        changedFields: { pipelineStatus: advancedStatus },
+        eventType: 'pipeline_status_changed',
+        nextStatus: advancedStatus,
+        previousStatus: candidate.pipeline_status,
+        workspaceId: input.workspaceId,
+      });
+    }
     await appendCandidateEvent(connection, {
       actorUserId: input.actorUserId,
       candidateId: input.candidateId,
@@ -185,7 +206,11 @@ export async function submitManualReview(pool: Pool, rawInput: unknown) {
       summary: { decision: input.decision },
       workspaceId: input.workspaceId,
     });
-    return { id: reviewId, version: candidate.version + 1 };
+    return {
+      id: reviewId,
+      pipelineStatus: advancedStatus ?? candidate.pipeline_status,
+      version: candidate.version + 1,
+    };
   });
 }
 

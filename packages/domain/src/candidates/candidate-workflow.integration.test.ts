@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -100,7 +102,7 @@ describeWithMysql('manual review and outreach workflow', () => {
   afterAll(async () => pool.end());
 
   it('records the manual decision as the final business conclusion', async () => {
-    await submitManualReview(pool, {
+    const reviewed = await submitManualReview(pool, {
       actorRole: 'admin',
       actorUserId,
       candidateId,
@@ -109,15 +111,23 @@ describeWithMysql('manual review and outreach workflow', () => {
       reason: '内容调性不适合本次应用推广',
       workspaceId,
     });
+    expect(reviewed).toEqual({
+      id: expect.any(String),
+      pipelineStatus: 'unsuitable',
+      version: 2,
+    });
     const workflow = await getCandidateWorkflow(pool, adminAccess(), candidateId);
     expect(workflow.reviews[0]).toMatchObject({
       decision: 'rejected',
       reason: '内容调性不适合本次应用推广',
     });
+    expect(workflow.pipelineStatus).toBe('unsuitable');
+    expect(workflow.candidateVersion).toBe(2);
   });
 
   it('records allowed status transitions and rejects skipped stages', async () => {
     const before = await getCandidateWorkflow(pool, adminAccess(), candidateId);
+    expect(before.pipelineStatus).toBe('unsuitable');
     await expect(
       transitionCandidatePipeline(pool, {
         actorRole: 'admin',
@@ -128,11 +138,20 @@ describeWithMysql('manual review and outreach workflow', () => {
         workspaceId,
       }),
     ).rejects.toBeInstanceOf(InvalidPipelineTransitionError);
-    const moved = await transitionCandidatePipeline(pool, {
+    await transitionCandidatePipeline(pool, {
       actorRole: 'admin',
       actorUserId,
       candidateId,
       expectedVersion: before.candidateVersion,
+      nextStatus: 'pending_review',
+      workspaceId,
+    });
+    const reopened = await getCandidateWorkflow(pool, adminAccess(), candidateId);
+    const moved = await transitionCandidatePipeline(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId,
+      expectedVersion: reopened.candidateVersion,
       nextStatus: 'to_contact',
       workspaceId,
     });
@@ -294,5 +313,168 @@ describeWithMysql('manual review and outreach workflow', () => {
       [workspaceId],
     );
     expect(exportAudits[0]?.summary_json).toMatchObject({ count: 1 });
+  });
+
+  async function createPendingCandidate(platformCreatorId: string) {
+    const newCreatorId = randomUUID();
+    const newObservationId = randomUUID();
+    const newCandidateId = randomUUID();
+    await pool.execute(
+      `INSERT INTO creators
+       (id, workspace_id, platform, platform_creator_id, first_observed_at, last_observed_at)
+       VALUES (?, ?, 'douyin', ?, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))`,
+      [newCreatorId, workspaceId, platformCreatorId],
+    );
+    await pool.execute(
+      `INSERT INTO creator_observations
+       (id, workspace_id, creator_id, run_id, device_id, nickname, profile_url,
+        parser_confidence, collector_version, parser_version, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0.99, '1.0.0', '1.0.0', CURRENT_TIMESTAMP(3))`,
+      [
+        newObservationId,
+        workspaceId,
+        newCreatorId,
+        runId,
+        deviceId,
+        platformCreatorId,
+        `https://www.douyin.com/user/${platformCreatorId}`,
+      ],
+    );
+    await pool.execute(
+      `INSERT INTO campaign_candidates
+       (id, workspace_id, campaign_id, creator_id, latest_run_id,
+        latest_creator_observation_id, hard_filter_status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pass')`,
+      [newCandidateId, workspaceId, campaignId, newCreatorId, runId, newObservationId],
+    );
+    return newCandidateId;
+  }
+
+  it('复核通过在同一操作内推进到待联系，只递增一次版本并留下两条事件', async () => {
+    const target = await createPendingCandidate('workflow-auto-approve');
+    const reviewed = await submitManualReview(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      decision: 'approved',
+      expectedVersion: 1,
+      workspaceId,
+    });
+    expect(reviewed).toEqual({
+      id: expect.any(String),
+      pipelineStatus: 'to_contact',
+      version: 2,
+    });
+    const workflow = await getCandidateWorkflow(pool, adminAccess(), target);
+    expect(workflow.pipelineStatus).toBe('to_contact');
+    expect(workflow.candidateVersion).toBe(2);
+    // candidate_events 只有毫秒级 created_at 与随机 UUID 主键，同一事务内的两条事件
+    // 没有可依赖的先后次序，因此只断言两条都在且内容正确。
+    expect(new Set(workflow.events.map((event) => event.eventType))).toEqual(
+      new Set(['manual_reviewed', 'pipeline_status_changed']),
+    );
+    expect(workflow.events).toHaveLength(2);
+    expect(workflow.events).toContainEqual(
+      expect.objectContaining({
+        eventType: 'pipeline_status_changed',
+        previousStatus: 'pending_review',
+        nextStatus: 'to_contact',
+      }),
+    );
+    const [audits] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM audit_events
+       WHERE workspace_id = ? AND subject_id = ? AND action = 'candidate.reviewed'`,
+      [workspaceId, target],
+    );
+    expect(Number(audits[0]?.total)).toBe(1);
+  });
+
+  it('待定结论只记录历史，不推进阶段', async () => {
+    const target = await createPendingCandidate('workflow-auto-pending');
+    const reviewed = await submitManualReview(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      decision: 'pending',
+      expectedVersion: 1,
+      reason: '需要再看一条作品',
+      workspaceId,
+    });
+    expect(reviewed).toMatchObject({ pipelineStatus: 'pending_review', version: 2 });
+    const workflow = await getCandidateWorkflow(pool, adminAccess(), target);
+    expect(workflow.pipelineStatus).toBe('pending_review');
+    expect(workflow.events.map((event) => event.eventType)).toEqual(['manual_reviewed']);
+  });
+
+  it('已离开待复核阶段时补交结论只记录历史，不改变阶段也不报错', async () => {
+    const target = await createPendingCandidate('workflow-auto-late');
+    await transitionCandidatePipeline(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      expectedVersion: 1,
+      nextStatus: 'to_contact',
+      workspaceId,
+    });
+    await transitionCandidatePipeline(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      expectedVersion: 2,
+      nextStatus: 'contacted',
+      workspaceId,
+    });
+    const reviewed = await submitManualReview(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      decision: 'rejected',
+      expectedVersion: 3,
+      reason: '补记：沟通后判断调性不符',
+      workspaceId,
+    });
+    expect(reviewed).toMatchObject({ pipelineStatus: 'contacted', version: 4 });
+    const workflow = await getCandidateWorkflow(pool, adminAccess(), target);
+    expect(workflow.pipelineStatus).toBe('contacted');
+    expect(workflow.reviews[0]).toMatchObject({ decision: 'rejected' });
+  });
+
+  it('写审计失败时复核结论与阶段推进一并回滚', async () => {
+    const target = await createPendingCandidate('workflow-auto-rollback');
+    const realConnection = await pool.getConnection();
+    const failingPool = {
+      getConnection: async () =>
+        new Proxy(realConnection, {
+          get(connection, property) {
+            if (property === 'execute') {
+              return (sql: string, parameters?: unknown[]) => {
+                if (sql.includes('audit_events')) {
+                  return Promise.reject(new Error('injected audit failure'));
+                }
+                return connection.execute(sql as never, parameters as never);
+              };
+            }
+            const value = Reflect.get(connection, property);
+            return typeof value === 'function' ? value.bind(connection) : value;
+          },
+        }),
+    } as unknown as Pool;
+
+    await expect(
+      submitManualReview(failingPool, {
+        actorRole: 'admin',
+        actorUserId,
+        candidateId: target,
+        decision: 'approved',
+        expectedVersion: 1,
+        workspaceId,
+      }),
+    ).rejects.toThrow('injected audit failure');
+
+    const workflow = await getCandidateWorkflow(pool, adminAccess(), target);
+    expect(workflow.pipelineStatus).toBe('pending_review');
+    expect(workflow.candidateVersion).toBe(1);
+    expect(workflow.reviews).toEqual([]);
+    expect(workflow.events).toEqual([]);
   });
 });
