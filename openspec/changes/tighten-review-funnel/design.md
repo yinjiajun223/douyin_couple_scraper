@@ -72,6 +72,10 @@
 
 **备选**：只写 `creators` 不写 observations —— 被否，去重需要 `creators`，但可追溯性与重算需要 observations；拆开写会同时丢掉两者的一半价值。
 
+**同一闸门也作用于旧数据导入**：`legacy-import.ts` 走的是同一条入库路径，且旧导出只有主页字段（`posts: []`），硬筛结论恒为「数据未知」，因此导入后不再产生任何候选记录，其 `progress_json.candidatesFound` 也据实记为 0。事实账本、作者主档与来源关系照旧完整写入，判定依据可由 D2 的重算能力查看。随之失效的 `preserveMissingLegacyPostEvidence`（往 `rule_evaluations` 与 `campaign_candidates` 回写 unknown 标记）已删除：闸门后这两张表对旧导入恒无行可写。
+
+**代价**：旧数据导入从「填充达人库」变成「只填充事实账本」。这是刻意的 —— 导入的达人都缺少作品数据，即使入库也必然卡在人工复核，正是本次要消除的成本来源。
+
 ### D4: 存量数据靠「移除 UI 入口」隔离，不做迁移
 
 存量 `fail` 候选行：默认列表本已排除（`candidate-library.ts:297`），无需处理。存量 `unknown` 候选行：随「待补证据」分区移除而自然不可见。两者都保留在库中，`hardFilterStatus` 服务端过滤参数保留供管理员查询。

@@ -1,11 +1,13 @@
 ## 1. 入库闸门（domain，阶段 A）
 
-- [ ] 1.1 修改 `packages/domain/src/ingestion/collector-ingestion.ts` 的 `findOrCreateCandidate`（:336-382）：未命中已存在行时仅在 `outcome === 'pass'` 才 INSERT，返回 `null` 表示未建候选；命中已存在行时保留 UPDATE 的 `latest_run_id`、`latest_creator_observation_id`、`version = version + 1`，并从 SET 子句中**移除 `hard_filter_status = ?`**（:358）。验证：`npm run typecheck -w @douyin/domain` 通过，且调用点已适配可空返回值。
-- [ ] 1.2 调整 `ingestCreatorObservation`（:182-334）：候选为 `null` 时跳过 `rule_evaluations` 写入（:306-331），不抛错、不影响同批次其余观测。验证：`npm run test -w @douyin/domain` 通过。
-- [ ] 1.3 在 `packages/domain/src/ingestion/collector-ingestion.integration.test.ts` 补闸门用例：pass 首次入库、fail 首次不入库、unknown 首次不入库、fail/unknown 观测仍写满 `creators` / `creator_observations` / `posts` / `post_observations` / `run_creator_sources`、非 pass 观测的 `rule_evaluations` 行数为 0、pass 观测的行数等于硬规则条数。验证：`npm run test:mysql` 通过（需本机 Docker 与 MySQL）。
-- [ ] 1.4 在同一集成测试文件补「一旦晋级持续跟踪」用例：已存在候选在后续运行结论为 fail / unknown 时，`latest_creator_observation_id` 与 `latest_run_id` 被更新、`hard_filter_status` 保持 `'pass'`、`version` 递增。验证：`npm run test:mysql` 通过。
-- [ ] 1.5 在同一集成测试文件补跨运行去重回归用例：同一 `platform_creator_id` 在两次运行中均为 fail，`creators` 只有一行且两条观测都挂在同一主档上。验证：`npm run test:mysql` 通过。
-- [ ] 1.6 在 `apps/api/src/ingestion.integration.test.ts` 锁定批次 ack 语义：fail 与 unknown 观测仍返回 `accepted`（重复提交返回 `duplicate`），任何情况下都不返回 `rejected`。验证：`npm run test:mysql` 通过，且 `git diff --stat packages/contracts` 为空。
+- [x] 1.1 修改 `packages/domain/src/ingestion/collector-ingestion.ts` 的 `findOrCreateCandidate`（:336-382）：未命中已存在行时仅在 `outcome === 'pass'` 才 INSERT，返回 `null` 表示未建候选；命中已存在行时保留 UPDATE 的 `latest_run_id`、`latest_creator_observation_id`、`version = version + 1`，并从 SET 子句中**移除 `hard_filter_status = ?`**（:358）。验证：`npm run typecheck -w @douyin/domain` 通过，且调用点已适配可空返回值。
+- [x] 1.2 调整 `ingestCreatorObservation`（:182-334）：候选为 `null` 时跳过 `rule_evaluations` 写入（:306-331），不抛错、不影响同批次其余观测。验证：`npm run test -w @douyin/domain` 通过。
+- [x] 1.3 在 `packages/domain/src/ingestion/collector-ingestion.integration.test.ts` 补闸门用例：pass 首次入库、fail 首次不入库、unknown 首次不入库、fail/unknown 观测仍写满 `creators` / `creator_observations` / `posts` / `post_observations` / `run_creator_sources`、非 pass 观测的 `rule_evaluations` 行数为 0、pass 观测的行数等于硬规则条数。验证：`npm run test:mysql` 通过（需本机 Docker 与 MySQL）。
+- [x] 1.4 在同一集成测试文件补「一旦晋级持续跟踪」用例：已存在候选在后续运行结论为 fail / unknown 时，`latest_creator_observation_id` 与 `latest_run_id` 被更新、`hard_filter_status` 保持 `'pass'`、`version` 递增。验证：`npm run test:mysql` 通过。
+- [x] 1.5 在同一集成测试文件补跨运行去重回归用例：同一 `platform_creator_id` 在两次运行中均为 fail，`creators` 只有一行且两条观测都挂在同一主档上。验证：`npm run test:mysql` 通过。
+- [x] 1.6 在 `apps/api/src/ingestion.integration.test.ts` 锁定批次 ack 语义：fail 与 unknown 观测仍返回 `accepted`（重复提交返回 `duplicate`），任何情况下都不返回 `rejected`。验证：`npm run test:mysql` 通过，且 `git diff --stat packages/contracts` 为空。
+- [x] 1.7 处理闸门对旧数据导入的连带影响（实施中发现，见 design.md D3）：`legacy-import.ts` 的 `progress_json.candidatesFound` 由 `importedObservations` 改为 0（旧导出无作品数据，硬筛恒为未知，不再产生候选），删除随之失效的 `preserveMissingLegacyPostEvidence`，并更新 `legacy-import.integration.test.ts` 断言为「候选为空、事实账本与来源关系照旧写入」。验证：`npm run test -w @douyin/domain` 与 domain 集成套件全绿。
+- [x] 1.8 修正 `candidate-library.integration.test.ts`：`filter-old-fail` 不再由采集产生候选行，改为直接插入一行存量 `fail` 候选，以继续验证 `hardFilterStatus` 显式过滤对历史行生效。验证：domain 集成套件全绿。
 
 ## 2. 复核即推进阶段（domain + api，阶段 A）
 

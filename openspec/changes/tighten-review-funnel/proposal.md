@@ -30,7 +30,9 @@
 - `douyin-local-collection`: 主页截图的采集与上传门控由「排除 fail」收紧为「仅 pass」。
 - `hosted-platform-operations`: 私有 OSS 素材新增孤儿证据回收责任（已确认但无对应入库候选的截图）；明确本 change 不构成采集助手协议变更、不提高最低支持版本，旧版助手上传的多余截图由服务端回收而非拒绝。
 
-> 排序依赖：`openspec/specs/` 目前为空，上述四个 capability 仅以 delta 形式存在于尚未归档的 `build-douyin-influencer-ops-platform`（90/94）。该 change 应先归档，使 delta 落入主 specs，本 change 的 delta 才有可修改的基线。
+> 基线已就绪：上述五个 capability 的主 specs 已从 `build-douyin-influencer-ops-platform` 的 delta 同步到 `openspec/specs/`（该 change 仍有四项真实环境验收未完成，故保持未归档），本 change 的 MODIFIED delta 有可修改的基线。
+>
+> 与 `admin-data-and-member-operations` 的关系：两者的 MODIFIED requirement 集合不相交（对方只改 `internal-access-control`），先后同步无需合并；但对方的批量复核复用本 change 的「复核即推进 pipeline」语义，实施顺序上本 change 的服务端部分 MUST 先上线。
 
 ## Impact
 
