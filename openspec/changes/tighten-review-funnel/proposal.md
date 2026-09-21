@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- **入库闸门**：只有硬筛 `pass` 的观测才创建 `campaign_candidates` 行；**已存在的候选行仍照常更新**（含 `hard_filter_status`），遵循「一旦晋级，持续跟踪」——避免已在跟进的达人因指标波动而停在过时的观测指针上。
+- **入库闸门**：只有硬筛 `pass` 的观测才创建 `campaign_candidates` 行；**已存在的候选行仍照常更新**采集事实指针，遵循「一旦晋级，持续跟踪」——避免已在跟进的达人因指标波动而停在过时的观测指针上。更新路径**不再改写 `hard_filter_status`**：该列语义收紧为「入库资格（创建时判定）」，否则一个已晋级候选在指标掉出区间后会被达人库默认谓词 `<> 'fail'` 静默过滤掉，运营正在跟进的达人会凭空消失。「本轮是否仍达标」改由采集事实 + 规则快照重算得出。
 - 非 `pass` 的观测不再写 `rule_evaluations`。「为什么被筛掉」这个结论可由不可变的原始观测（`creator_observations.follower_count`、`post_observations.like_count` / `published_at`）加上不可变的 `campaign_rule_versions.rules_json` 与该 run 的规则版本关联确定性地重算，无需物化。
 - **层 1 事实账本保持全量写入，不做门控**：`creators`、`creator_observations`、`posts`、`post_observations`、`run_creator_sources` 照旧为所有观测写入。它是跨运行去重与复采判断的唯一依据，单行成本约数百字节，远低于因丢失去重记忆而重复打开主页所带来的采集时间成本与平台风控风险。
 - **人工复核驱动状态流转**：提交复核结论时在同一事务内自动推进 pipeline——`approved` → `to_contact`，`rejected` → `unsuitable`。**仅当当前 `pipeline_status` 为 `pending_review` 时推进**；否则只记录结论、不动状态、不报错（复核结论是 append-only 的历史证据轴，pipeline 是当前状态轴，职责分离）。沿用既有乐观锁，`version` 只递增一次。转换矩阵无需修改（`pending_review → unsuitable | to_contact` 已合法）。
