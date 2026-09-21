@@ -144,12 +144,6 @@ export async function importLegacyExport(
       protocolVersion: COLLECTOR_PROTOCOL_VERSION,
       runId: run.id,
     });
-    await preserveMissingLegacyPostEvidence(
-      pool,
-      input.workspaceId,
-      run.id,
-      chunk.map(([creatorId]) => uuidFromText(`${fingerprint}:${creatorId}`)),
-    );
     importedObservations += acknowledgement.results.filter(
       (result) => result.status === 'accepted',
     ).length;
@@ -162,7 +156,8 @@ export async function importLegacyExport(
      WHERE workspace_id = ? AND id = ?`,
     [
       JSON.stringify({
-        candidatesFound: importedObservations,
+        // 旧导出只有主页字段、没有作品数据，硬筛结论恒为「数据未知」，因此不会产生候选。
+        candidatesFound: 0,
         creatorProfilesSeen: importedObservations,
         elapsedSeconds: 0,
         feedItemsSeen: 0,
@@ -183,46 +178,6 @@ export async function importLegacyExport(
     sourceRecords: sourceRecords.length,
     uniqueCreators: records.length,
   };
-}
-
-async function preserveMissingLegacyPostEvidence(
-  pool: Pool,
-  workspaceId: string,
-  runId: string,
-  creatorObservationIds: string[],
-) {
-  if (creatorObservationIds.length === 0) return;
-  const placeholders = creatorObservationIds.map(() => '?').join(', ');
-  await pool.execute(
-    `UPDATE rule_evaluations
-     SET outcome = 'unknown', matched_post_observation_id = NULL,
-         evidence_json = JSON_OBJECT(
-           'reason', 'legacy_missing_post_evidence',
-           'source', 'legacy_import',
-           'matchedPosts', JSON_ARRAY(),
-           'unknownPosts', JSON_ARRAY()
-         )
-     WHERE workspace_id = ? AND run_id = ? AND rule_key = 'recent-viral-post'
-       AND creator_observation_id IN (${placeholders})`,
-    [workspaceId, runId, ...creatorObservationIds],
-  );
-  await pool.execute(
-    `UPDATE campaign_candidates candidates
-     SET hard_filter_status = (
-       SELECT CASE
-         WHEN SUM(evaluations.outcome = 'fail') > 0 THEN 'fail'
-         WHEN SUM(evaluations.outcome = 'unknown') > 0 THEN 'unknown'
-         ELSE 'pass'
-       END
-       FROM rule_evaluations evaluations
-       WHERE evaluations.workspace_id = candidates.workspace_id
-         AND evaluations.candidate_id = candidates.id
-         AND evaluations.run_id = ?
-     )
-     WHERE candidates.workspace_id = ? AND candidates.latest_run_id = ?
-       AND candidates.latest_creator_observation_id IN (${placeholders})`,
-    [runId, workspaceId, runId, ...creatorObservationIds],
-  );
 }
 
 function normalizeLegacyRecord(value: unknown): LegacyCreatorRecord {

@@ -47,7 +47,7 @@ describeWithMysql('legacy JSON/CSV import', () => {
     await rm(temporaryDirectory, { force: true, recursive: true });
   });
 
-  it('imports through the normal ingestion path, keeps unknowns, skips screenshots and deduplicates reruns', async () => {
+  it('imports through the normal ingestion path, keeps unknowns without creating candidates, skips screenshots and deduplicates reruns', async () => {
     const filePath = join(temporaryDirectory, 'legacy-sample.json');
     await writeFile(
       filePath,
@@ -120,16 +120,22 @@ describeWithMysql('legacy JSON/CSV import', () => {
       'SELECT id FROM media_objects WHERE workspace_id = ?',
       [workspaceId],
     );
+    const [sources] = await pool.query<RowDataPacket[]>(
+      'SELECT COUNT(*) AS source_count FROM run_creator_sources WHERE run_id = ?',
+      [first.runId],
+    );
+    expect(Number(sources[0]!.source_count)).toBe(2);
     expect(runs[0]).toMatchObject({ status: 'completed', stop_reason: 'legacy_import' });
-    expect(runs[0]!.progress_json).toMatchObject({ legacyImport: true });
+    expect(runs[0]!.progress_json).toMatchObject({
+      candidatesFound: 0,
+      creatorProfilesSeen: 2,
+      legacyImport: true,
+    });
     expect(observations).toEqual([
       expect.objectContaining({ follower_count: 90 }),
       expect.objectContaining({ follower_count: null }),
     ]);
-    expect(candidates).toEqual([
-      expect.objectContaining({ hard_filter_status: 'unknown' }),
-      expect.objectContaining({ hard_filter_status: 'unknown' }),
-    ]);
+    expect(candidates).toEqual([]);
     expect(media).toHaveLength(0);
   });
 

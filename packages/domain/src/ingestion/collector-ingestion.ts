@@ -303,31 +303,35 @@ async function ingestCreatorObservation(
     creatorObservationId: observation.observationId,
     outcome: hardFilter.outcome,
   });
-  for (const evaluation of hardFilter.evaluations) {
-    const matchedPosts = evaluation.evidence.matchedPosts as
-      Array<{ postObservationId: string }> | undefined;
-    await connection.execute(
-      `INSERT INTO rule_evaluations
-       (id, workspace_id, candidate_id, run_id, rule_version_id,
-        creator_observation_id, matched_post_observation_id, rule_key,
-        rule_category, outcome, evidence_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hard', ?, ?)`,
-      [
-        randomUUID(),
-        device.workspaceId,
-        candidateId,
-        batch.runId,
-        run.rule_version_id,
-        observation.observationId,
-        matchedPosts?.[0]?.postObservationId ?? null,
-        evaluation.ruleId,
-        evaluation.outcome,
-        JSON.stringify({
-          ...evaluation.evidence,
-          evidenceReferences: evaluation.evidenceReferences,
-        }),
-      ],
-    );
+  // 未入库的达人没有候选行，rule_evaluations.candidate_id 的外键也就无处可指；
+  // 其结论可由上面的不可变观测与 run.rule_version_id 指向的规则快照重算。
+  if (candidateId !== null) {
+    for (const evaluation of hardFilter.evaluations) {
+      const matchedPosts = evaluation.evidence.matchedPosts as
+        Array<{ postObservationId: string }> | undefined;
+      await connection.execute(
+        `INSERT INTO rule_evaluations
+         (id, workspace_id, candidate_id, run_id, rule_version_id,
+          creator_observation_id, matched_post_observation_id, rule_key,
+          rule_category, outcome, evidence_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'hard', ?, ?)`,
+        [
+          randomUUID(),
+          device.workspaceId,
+          candidateId,
+          batch.runId,
+          run.rule_version_id,
+          observation.observationId,
+          matchedPosts?.[0]?.postObservationId ?? null,
+          evaluation.ruleId,
+          evaluation.outcome,
+          JSON.stringify({
+            ...evaluation.evidence,
+            evidenceReferences: evaluation.evidenceReferences,
+          }),
+        ],
+      );
+    }
   }
 
   return { observationId: observation.observationId, status: 'accepted' };
@@ -343,7 +347,7 @@ async function findOrCreateCandidate(
     creatorObservationId: string;
     outcome: 'pass' | 'fail' | 'unknown';
   },
-): Promise<string> {
+): Promise<string | null> {
   const [rows] = await connection.query<CandidateRow[]>(
     `SELECT id FROM campaign_candidates
      WHERE campaign_id = ? AND creator_id = ?
@@ -352,14 +356,21 @@ async function findOrCreateCandidate(
   );
   const existing = rows[0];
   if (existing) {
+    // hard_filter_status 表示「入库资格（创建时判定）」，不随后续运行改写：
+    // 达人库默认谓词是 hard_filter_status <> 'fail'，若把已晋级候选改写成
+    // fail，运营正在跟进的达人会从列表里静默消失。
     await connection.execute(
       `UPDATE campaign_candidates
        SET latest_run_id = ?, latest_creator_observation_id = ?,
-           hard_filter_status = ?, version = version + 1
+           version = version + 1
        WHERE id = ?`,
-      [input.runId, input.creatorObservationId, input.outcome, existing.id],
+      [input.runId, input.creatorObservationId, existing.id],
     );
     return existing.id;
+  }
+
+  if (input.outcome !== 'pass') {
+    return null;
   }
 
   const id = randomUUID();
@@ -367,7 +378,7 @@ async function findOrCreateCandidate(
     `INSERT INTO campaign_candidates
      (id, workspace_id, campaign_id, creator_id, latest_run_id,
       latest_creator_observation_id, hard_filter_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'pass')`,
     [
       id,
       input.workspaceId,
@@ -375,7 +386,6 @@ async function findOrCreateCandidate(
       input.creatorId,
       input.runId,
       input.creatorObservationId,
-      input.outcome,
     ],
   );
   return id;

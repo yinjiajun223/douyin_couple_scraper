@@ -237,4 +237,145 @@ describeWithMysql('Collector 批量观察 ingestion API', () => {
     }
     await server.close();
   });
+
+  it('硬筛未通过与数据未知的观察仍返回 accepted，只是不建立候选', async () => {
+    const server = buildServer({ pool, logger: false, secureCookies: true });
+    const login = await server.inject({
+      method: 'POST',
+      url: '/auth/login',
+      payload: {
+        workspaceId,
+        email: credentials.email,
+        password: credentials.password,
+      },
+    });
+    const browserHeaders = {
+      cookie: firstHeader(login.headers['set-cookie'])!.split(';')[0]!,
+      'x-csrf-token': login.json().csrfToken as string,
+    };
+    const pairingCode = await server.inject({
+      method: 'POST',
+      url: '/devices/pairing-codes',
+      headers: browserHeaders,
+      payload: { expiresInMinutes: 10 },
+    });
+    const paired = await server.inject({
+      method: 'POST',
+      url: '/collector/pair',
+      payload: {
+        code: pairingCode.json().code,
+        name: '闸门 ack 设备',
+        collectorVersion: '1.0.0',
+        parserVersion: '1.0.0',
+      },
+    });
+    const deviceId = paired.json().deviceId as string;
+    const deviceHeaders = { authorization: `Bearer ${paired.json().token as string}` };
+    const campaign = await server.inject({
+      method: 'POST',
+      url: '/campaigns',
+      headers: browserHeaders,
+      payload: {
+        name: '闸门 ack 测试任务',
+        recommendationProfileDescription: '校园推荐流',
+        rules: createDefaultCampaignRuleSet(),
+      },
+    });
+    const createdRun = await server.inject({
+      method: 'POST',
+      url: `/campaigns/${campaign.json().id}/runs`,
+      headers: browserHeaders,
+    });
+    const runId = createdRun.json().id as string;
+    await server.inject({
+      method: 'POST',
+      url: `/collector/runs/${runId}/claim`,
+      headers: deviceHeaders,
+    });
+    await server.inject({
+      method: 'POST',
+      url: `/collector/runs/${runId}/start`,
+      headers: deviceHeaders,
+    });
+
+    const cases = [
+      { suffix: 'pass', followerCount: 1_200, followerCountRaw: '1200' },
+      { suffix: 'fail', followerCount: 6_200, followerCountRaw: '6200' },
+      { suffix: 'unknown', followerCount: null, followerCountRaw: '--' },
+    ] as const;
+    const response = await server.inject({
+      method: 'POST',
+      url: '/collector/ingestion/batches',
+      headers: deviceHeaders,
+      payload: {
+        protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+        collectorVersion: '1.0.0',
+        parserVersion: '1.0.0',
+        deviceId,
+        runId,
+        idempotencyKey: 'ingestion-gate-ack-0001',
+        observations: cases.map((item, index) => ({
+          observationId: `2a000000-0000-4000-8000-00000000000${index + 1}`,
+          platform: 'douyin',
+          platformCreatorId: `gate-creator-${item.suffix}`,
+          profileUrl: `https://www.douyin.com/user/gate-creator-${item.suffix}`,
+          nickname: `闸门测试 ${item.suffix}`,
+          biography: null,
+          followerCount: item.followerCount,
+          followerCountRaw: item.followerCountRaw,
+          observedAt: '2026-09-15T08:00:00.000Z',
+          parserConfidence: 0.98,
+          posts: [
+            {
+              platformPostId: `gate-post-${item.suffix}`,
+              postUrl: `https://www.douyin.com/video/gate-post-${item.suffix}`,
+              caption: '校园生活记录',
+              likeCount: 12_000,
+              likeCountRaw: '1.2万',
+              publishedAt: '2026-09-10T08:00:00.000Z',
+              observedAt: '2026-09-15T08:00:00.000Z',
+              screenshotLocalId: null,
+            },
+          ],
+        })),
+      },
+    });
+
+    // 采集器只在 status === 'rejected' 时中止整轮运行，因此闸门绝不能借用 rejected。
+    const observationIds = [1, 2, 3].map((index) => `2a000000-0000-4000-8000-00000000000${index}`);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      duplicateBatch: false,
+      results: observationIds.map((observationId) => ({ observationId, status: 'accepted' })),
+    });
+
+    const [counts] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM creators WHERE workspace_id = ?
+           AND platform_creator_id LIKE 'gate-creator-%') AS creator_count,
+         (SELECT COUNT(*) FROM campaign_candidates WHERE latest_run_id = ?) AS candidate_count,
+         (SELECT COUNT(*) FROM rule_evaluations WHERE run_id = ?) AS evaluation_count`,
+      [workspaceId, runId, runId],
+    );
+    expect(counts[0]).toMatchObject({
+      creator_count: 3,
+      candidate_count: 1,
+      evaluation_count: 2,
+    });
+    const [admitted] = await pool.query<RowDataPacket[]>(
+      `SELECT creators.platform_creator_id, candidates.hard_filter_status
+       FROM campaign_candidates candidates
+       JOIN creators ON creators.id = candidates.creator_id
+       WHERE candidates.latest_run_id = ?`,
+      [runId],
+    );
+    expect(admitted).toEqual([
+      expect.objectContaining({
+        platform_creator_id: 'gate-creator-pass',
+        hard_filter_status: 'pass',
+      }),
+    ]);
+
+    await server.close();
+  });
 });

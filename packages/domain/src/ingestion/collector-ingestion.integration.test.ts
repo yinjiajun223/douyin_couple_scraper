@@ -279,7 +279,7 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
     expect(Number(preservedFacts[0]?.audit_count)).toBeGreaterThanOrEqual(2);
   });
 
-  it('串联默认规则、OSS 证据与人工复核，并保留通过/失败/未知结论', async () => {
+  it('串联默认规则、OSS 证据与人工复核，仅为硬筛通过的达人建立候选', async () => {
     const configuredRules = createDefaultCampaignRuleSet();
     const campaign = await createCampaign(pool, {
       workspaceId,
@@ -377,11 +377,6 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
     );
     expect(candidates).toEqual([
       expect.objectContaining({
-        platform_creator_id: 'candidate-fail',
-        hard_filter_status: 'fail',
-        pipeline_status: 'pending_review',
-      }),
-      expect.objectContaining({
         platform_creator_id: 'candidate-pass',
         hard_filter_status: 'pass',
         pipeline_status: 'pending_review',
@@ -391,12 +386,45 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
         hard_filter_status: 'pass',
         pipeline_status: 'pending_review',
       }),
-      expect.objectContaining({
-        platform_creator_id: 'candidate-unknown',
-        hard_filter_status: 'unknown',
-        pipeline_status: 'pending_review',
-      }),
     ]);
+
+    // 层 1 事实账本不受闸门影响：四个达人的主档、观察、作品与来源关系都必须写满，
+    // 否则跨运行去重会失效，未达标达人会被反复打开主页。
+    const [ledger] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM creators WHERE workspace_id = ?
+           AND platform_creator_id LIKE 'candidate-%') AS creator_count,
+         (SELECT COUNT(*) FROM creator_observations obs
+           JOIN creators c ON c.id = obs.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id LIKE 'candidate-%') AS observation_count,
+         (SELECT COUNT(*) FROM posts WHERE workspace_id = ?
+           AND platform_post_id LIKE 'candidate-%') AS post_count,
+         (SELECT COUNT(*) FROM post_observations po
+           JOIN posts p ON p.id = po.post_id
+           WHERE p.workspace_id = ? AND p.platform_post_id LIKE 'candidate-%') AS post_observation_count,
+         (SELECT COUNT(*) FROM run_creator_sources rcs
+           JOIN creators c ON c.id = rcs.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id LIKE 'candidate-%'
+             AND rcs.run_id = ?) AS source_count`,
+      [workspaceId, workspaceId, workspaceId, workspaceId, workspaceId, run.id],
+    );
+    expect(ledger[0]).toMatchObject({
+      creator_count: 4,
+      observation_count: 4,
+      post_count: 4,
+      post_observation_count: 4,
+      source_count: 4,
+    });
+
+    // 未识别的粉丝数必须在采集事实中保持 NULL，不得被当作 0。
+    const [unknownFacts] = await pool.query<RowDataPacket[]>(
+      `SELECT obs.follower_count, obs.follower_count_raw FROM creator_observations obs
+       JOIN creators c ON c.id = obs.creator_id
+       WHERE c.workspace_id = ? AND c.platform_creator_id = 'candidate-unknown'`,
+      [workspaceId],
+    );
+    expect(unknownFacts[0]?.follower_count).toBeNull();
+    expect(unknownFacts[0]?.follower_count_raw).toBe('--');
 
     const [passCandidateRows] = await pool.query<RowDataPacket[]>(
       `SELECT candidates.id FROM campaign_candidates candidates
@@ -448,14 +476,22 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
        ORDER BY creators.platform_creator_id, evaluations.rule_key`,
       [run.id],
     );
-    expect(evaluations).toHaveLength(8);
-    expect(evaluations).toContainEqual(
-      expect.objectContaining({
-        platform_creator_id: 'candidate-unknown',
-        rule_key: 'followers',
-        outcome: 'unknown',
-      }),
+    // 闸门后只有两个入库候选，每个候选两条硬规则；未入库达人的结论不物化，
+    // 改由不可变观测 + 规则快照重算。
+    expect(evaluations).toHaveLength(4);
+    expect(new Set(evaluations.map((row) => row.platform_creator_id))).toEqual(
+      new Set(['candidate-pass', 'candidate-pass-2']),
     );
+    expect(evaluations.every((row) => row.outcome === 'pass')).toBe(true);
+    const [nonPassEvaluations] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM rule_evaluations evaluations
+       JOIN creator_observations obs ON obs.id = evaluations.creator_observation_id
+       JOIN creators ON creators.id = obs.creator_id
+       WHERE evaluations.run_id = ?
+         AND creators.platform_creator_id IN ('candidate-fail', 'candidate-unknown')`,
+      [run.id],
+    );
+    expect(Number(nonPassEvaluations[0]?.total)).toBe(0);
     const passViralEvidence = evaluations.find(
       (row) => row.platform_creator_id === 'candidate-pass' && row.rule_key === 'recent-viral-post',
     );
@@ -501,6 +537,256 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       candidateVersion: 3,
       pipelineStatus: 'to_contact',
       reviews: [expect.objectContaining({ decision: 'approved' })],
+    });
+  });
+
+  const startRun = async (campaignName: string) => {
+    const campaign = await createCampaign(pool, {
+      workspaceId,
+      actorUserId,
+      name: campaignName,
+      recommendationProfileDescription: '校园推荐流',
+      rules: createDefaultCampaignRuleSet(),
+    });
+    const run = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId: campaign.id,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: run.id, deviceId: deviceOneId });
+    await startClaimedCollectionRun(pool, {
+      workspaceId,
+      runId: run.id,
+      deviceId: deviceOneId,
+    });
+    return { campaignId: campaign.id, runId: run.id };
+  };
+
+  const ingestOne = (
+    runId: string,
+    idempotencyKey: string,
+    observation: {
+      observationId: string;
+      platformCreatorId: string;
+      followerCount: number | null;
+      followerCountRaw: string;
+      likeCount: number;
+      observedAt: string;
+    },
+  ) =>
+    ingestCollectorBatch(
+      pool,
+      {
+        deviceId: deviceOneId,
+        workspaceId,
+        ownerUserId: actorUserId,
+        name: '采集设备一',
+        collectorVersion: '1.0.0',
+        parserVersion: '1.0.0',
+      },
+      {
+        protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+        collectorVersion: '1.0.0',
+        parserVersion: '1.0.0',
+        deviceId: deviceOneId,
+        runId,
+        idempotencyKey,
+        observations: [
+          {
+            observationId: observation.observationId,
+            platform: 'douyin',
+            platformCreatorId: observation.platformCreatorId,
+            profileUrl: `https://www.douyin.com/user/${observation.platformCreatorId}`,
+            nickname: '晋级跟踪达人',
+            biography: '校园生活',
+            followerCount: observation.followerCount,
+            followerCountRaw: observation.followerCountRaw,
+            observedAt: observation.observedAt,
+            parserConfidence: 0.98,
+            posts: [
+              {
+                platformPostId: `${observation.platformCreatorId}-post`,
+                postUrl: `https://www.douyin.com/video/${observation.platformCreatorId}-post`,
+                caption: '校园爆款记录',
+                likeCount: observation.likeCount,
+                likeCountRaw: String(observation.likeCount),
+                publishedAt: observation.observedAt,
+                observedAt: observation.observedAt,
+                screenshotLocalId: null,
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+  it('已晋级候选在后续运行中持续跟踪，且入库资格结论不被下调', async () => {
+    const { campaignId, runId: runOne } = await startRun('晋级跟踪任务');
+    const creatorKey = 'promoted-creator';
+
+    const first = await ingestOne(runOne, 'promoted-batch-1', {
+      observationId: '26000000-0000-4000-8000-000000000001',
+      platformCreatorId: creatorKey,
+      followerCount: 1_200,
+      followerCountRaw: '1200',
+      likeCount: 12_000,
+      observedAt: '2026-09-15T08:00:00.000Z',
+    });
+    expect(first.results).toEqual([
+      { observationId: '26000000-0000-4000-8000-000000000001', status: 'accepted' },
+    ]);
+
+    const runTwo = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: runTwo.id, deviceId: deviceOneId });
+    await startClaimedCollectionRun(pool, {
+      workspaceId,
+      runId: runTwo.id,
+      deviceId: deviceOneId,
+    });
+    // 粉丝数掉出 0-5000 区间 -> 本轮硬筛结论为 fail。
+    const second = await ingestOne(runTwo.id, 'promoted-batch-2', {
+      observationId: '26000000-0000-4000-8000-000000000002',
+      platformCreatorId: creatorKey,
+      followerCount: 6_200,
+      followerCountRaw: '6200',
+      likeCount: 12_000,
+      observedAt: '2026-09-16T08:00:00.000Z',
+    });
+
+    const runThree = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: runThree.id, deviceId: deviceOneId });
+    await startClaimedCollectionRun(pool, {
+      workspaceId,
+      runId: runThree.id,
+      deviceId: deviceOneId,
+    });
+    // 粉丝数无法识别 -> 本轮硬筛结论为 unknown。
+    const third = await ingestOne(runThree.id, 'promoted-batch-3', {
+      observationId: '26000000-0000-4000-8000-000000000003',
+      platformCreatorId: creatorKey,
+      followerCount: null,
+      followerCountRaw: '--',
+      likeCount: 12_000,
+      observedAt: '2026-09-17T08:00:00.000Z',
+    });
+
+    // fail / unknown 的观测仍被接受：闸门只作用于候选行创建，不作用于事实同步，
+    // 也绝不能返回 rejected —— 采集器只在 rejected 时中止整轮运行。
+    expect(second.results).toEqual([
+      { observationId: '26000000-0000-4000-8000-000000000002', status: 'accepted' },
+    ]);
+    expect(third.results).toEqual([
+      { observationId: '26000000-0000-4000-8000-000000000003', status: 'accepted' },
+    ]);
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT candidates.id, candidates.hard_filter_status, candidates.latest_run_id,
+              candidates.latest_creator_observation_id, candidates.version
+       FROM campaign_candidates candidates
+       JOIN creators ON creators.id = candidates.creator_id
+       WHERE candidates.campaign_id = ? AND creators.platform_creator_id = ?`,
+      [campaignId, creatorKey],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      hard_filter_status: 'pass',
+      latest_run_id: runThree.id,
+      latest_creator_observation_id: '26000000-0000-4000-8000-000000000003',
+      version: 3,
+    });
+
+    // 后两轮不写 rule_evaluations（候选已存在但本轮结论非 pass 时仍会写吗？）——
+    // 闸门只跳过「无候选行」的情形，已入库候选的每轮结论仍照常物化，供详情追溯。
+    const [evaluationRuns] = await pool.query<RowDataPacket[]>(
+      `SELECT run_id, COUNT(*) AS total FROM rule_evaluations
+       WHERE creator_observation_id IN (?, ?, ?)
+       GROUP BY run_id ORDER BY run_id`,
+      [
+        '26000000-0000-4000-8000-000000000001',
+        '26000000-0000-4000-8000-000000000002',
+        '26000000-0000-4000-8000-000000000003',
+      ],
+    );
+    expect(evaluationRuns).toHaveLength(3);
+    expect(evaluationRuns.every((row) => Number(row.total) === 2)).toBe(true);
+  });
+
+  it('未达标达人跨运行只保留一个主档，且不建立任何候选', async () => {
+    const { campaignId, runId: runOne } = await startRun('跨运行去重任务');
+    const creatorKey = 'never-pass-creator';
+
+    await ingestOne(runOne, 'never-pass-batch-1', {
+      observationId: '27000000-0000-4000-8000-000000000001',
+      platformCreatorId: creatorKey,
+      followerCount: 6_200,
+      followerCountRaw: '6200',
+      likeCount: 12_000,
+      observedAt: '2026-09-15T08:00:00.000Z',
+    });
+    const runTwo = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: runTwo.id, deviceId: deviceOneId });
+    await startClaimedCollectionRun(pool, {
+      workspaceId,
+      runId: runTwo.id,
+      deviceId: deviceOneId,
+    });
+    await ingestOne(runTwo.id, 'never-pass-batch-2', {
+      observationId: '27000000-0000-4000-8000-000000000002',
+      platformCreatorId: creatorKey,
+      followerCount: 6_400,
+      followerCountRaw: '6400',
+      likeCount: 12_000,
+      observedAt: '2026-09-16T08:00:00.000Z',
+    });
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM creators WHERE workspace_id = ?
+           AND platform_creator_id = ?) AS creator_count,
+         (SELECT COUNT(*) FROM creator_observations obs
+           JOIN creators c ON c.id = obs.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id = ?) AS observation_count,
+         (SELECT COUNT(*) FROM run_creator_sources rcs
+           JOIN creators c ON c.id = rcs.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id = ?) AS source_count,
+         (SELECT COUNT(*) FROM campaign_candidates candidates
+           JOIN creators c ON c.id = candidates.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id = ?) AS candidate_count,
+         (SELECT COUNT(*) FROM rule_evaluations evaluations
+           JOIN creator_observations obs ON obs.id = evaluations.creator_observation_id
+           JOIN creators c ON c.id = obs.creator_id
+           WHERE c.workspace_id = ? AND c.platform_creator_id = ?) AS evaluation_count`,
+      [
+        workspaceId,
+        creatorKey,
+        workspaceId,
+        creatorKey,
+        workspaceId,
+        creatorKey,
+        workspaceId,
+        creatorKey,
+        workspaceId,
+        creatorKey,
+      ],
+    );
+    expect(rows[0]).toMatchObject({
+      creator_count: 1,
+      observation_count: 2,
+      source_count: 2,
+      candidate_count: 0,
+      evaluation_count: 0,
     });
   });
 });

@@ -133,6 +133,25 @@ describeWithMysql('共享达人组合过滤', () => {
       })),
     });
 
+    // 入库闸门后 fail 达人不再由采集产生候选行；直接补一行存量数据，
+    // 用于验证 hardFilterStatus 显式过滤对历史行仍然生效。
+    await pool.execute(
+      `INSERT INTO campaign_candidates
+       (id, workspace_id, campaign_id, creator_id, latest_run_id,
+        latest_creator_observation_id, hard_filter_status)
+       SELECT ?, ?, ?, observations.creator_id, ?, observations.id, 'fail'
+       FROM creator_observations observations
+       WHERE observations.id = ?`,
+      [
+        randomUUID(),
+        workspaceId,
+        campaign.id,
+        run.id,
+        '28000000-0000-4000-8000-000000000003',
+        '28000000-0000-4000-8000-000000000003',
+      ],
+    );
+
     const [candidateRows] = await pool.query<RowDataPacket[]>(
       `SELECT candidates.id, candidates.version, creators.platform_creator_id
        FROM campaign_candidates candidates
