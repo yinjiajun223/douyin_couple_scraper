@@ -14,9 +14,9 @@
 
 ## 3. 标签写入（domain）
 
-- [ ] 3.1 在 `packages/domain/src/candidates/` 新增标签写入领域函数：按名 upsert `tags`（用 `INSERT ... ON DUPLICATE KEY UPDATE id = id` 后重新 SELECT，不做「先查后插」以避免 `uq_tags_workspace_name` 并发冲突）→ 建立或解除 `candidate_tags` 关联 → `appendCandidateEvent('tags_changed')` → 写审计。验证：新增集成测试覆盖添加、移除、并发同名创建、移除不影响其他候选上的同名标签，`npm run test:mysql` 通过。
-- [ ] 3.2 确认标签写入后既有筛选路径（`candidate-library.ts:311-324` 的 `tagNames` 子查询）可直接命中，无需新增索引。验证：`EXPLAIN` 走 `idx_candidate_tags_tag`，输出记录在实施备注中。
-- [ ] 3.3 对标签写入施加与候选写操作一致的行级可见范围校验，只读成员拒绝。验证：集成测试断言越权与非授权角色均被拒绝且不改变任何关联。
+- [x] 3.1 在 `packages/domain/src/candidates/` 新增标签写入领域函数：按名 upsert `tags`（用 `INSERT ... ON DUPLICATE KEY UPDATE id = id` 后重新 SELECT，不做「先查后插」以避免 `uq_tags_workspace_name` 并发冲突）→ 建立或解除 `candidate_tags` 关联 → `appendCandidateEvent('tags_changed')` → 写审计。验证：新增集成测试覆盖添加、移除、并发同名创建、移除不影响其他候选上的同名标签，`npm run test:mysql` 通过。
+- [x] 3.2 确认标签写入后既有筛选路径（`candidate-library.ts:311-324` 的 `tagNames` 子查询）可直接命中，无需新增索引。验证：`EXPLAIN` 走 `idx_candidate_tags_tag`，输出记录在实施备注中。实施备注（3.1-3.3）：领域函数为 `candidate-workflow.ts` 的 `setCandidateTags`（整组标签替换语义，返回 `{ id, tags }`），复用 `lockCandidate` 的行级可见范围、`appendCandidateEvent('tags_changed')` 与审计 `candidate.tags_changed`；只读成员由 `assertPermission(actorRole, 'candidate:write')` 在领域层直接拒绝。**不递增 `campaign_candidates.version`**，否则正在填写的复核/跟进表单会撞上版本冲突。upsert 后的回读必须用 `FOR SHARE`（当前读），并发同名创建时快照读看不到对方刚提交的行，会拿到 `undefined` 绑定参数。3.2 的实测结论：子查询的 `possible_keys` 含 `idx_candidate_tags_tag`，当前小数据量下优化器选覆盖索引 `fk_candidate_tags_candidate`（`Using index`，无回表），两者都是索引访问、无全表扫描，因此无需新增索引。
+- [x] 3.3 对标签写入施加与候选写操作一致的行级可见范围校验，只读成员拒绝。验证：集成测试断言越权与非授权角色均被拒绝且不改变任何关联。
 
 ## 4. 批量操作（domain + api）
 
@@ -24,7 +24,8 @@
 - [ ] 4.2 批量人工复核必须与单条 `submitManualReview` 语义完全一致，包括 `tighten-review-funnel` 引入的「仅从 `pending_review` 自动推进阶段、单次版本递增」。验证：集成测试断言批量通过 N 个待复核候选后各自进入 `to_contact`、`version` 各 +1、审计与事件各 N 条。
 - [ ] 4.3 部分成功语义：构造一个含版本过期目标和一个越权目标的批量请求。验证：集成测试断言其余目标成功、失败目标返回原因、无聚合式回滚，且失败目标的数据完全未变。
 - [ ] 4.4 在 `apps/api/src/server.ts` 新增批量复核与批量归档路由，权限 `candidate:write`、CSRF 必填、请求体经 zod 校验且拒绝超限。验证：`apps/api/src/authorization.integration.test.ts` 补三类断言（operator 可用、readonly 拒绝、缺 CSRF 拒绝），`npm run test:mysql` 通过。
-- [ ] 4.5 记录 100 条批量复核的实测耗时，确认未超出网关超时；若超出则下调上限而不是改为并发。验证：实测数值与最终上限写入实施备注。
+- [ ] 4.5 在 `apps/api/src/server.ts` 新增标签写入路由（`PUT /candidates/:id/tags`），权限 `candidate:write`、CSRF 必填、请求体经 zod 校验（标签名 1-100 字、最多 20 个），转调 `setCandidateTags`。原任务清单遗漏了这条路由，但 8.1 的网页标签编辑与 `specs/creator-candidate-library` 的「候选标签维护」都依赖它。验证：`authorization.integration.test.ts` 断言 operator 可用、readonly 拒绝、缺 CSRF 拒绝，`npm run test:mysql` 通过。
+- [ ] 4.6 记录 100 条批量复核的实测耗时，确认未超出网关超时；若超出则下调上限而不是改为并发。验证：实测数值与最终上限写入实施备注。
 
 ## 5. 成员生命周期（domain + api）
 
