@@ -31,4 +31,6 @@
 
 - `/health/live` 只表示 API 进程可响应；`/health/ready` 分别报告 MySQL 和 OSS 状态。MySQL/OSS 故障返回 503。
 - 每周确认磁盘、容器重启次数、RDS 连接数与 OSS 清理任务结果。
+- 迁移 `0014_media_cleanup_index.sql` 随本轮发布前向执行，为素材清理新增 `(status, confirmed_at)` 索引；InnoDB 加二级索引是在线 DDL，不阻塞 worker。
+- `ORPHAN_MEDIA_CLEANUP_ENABLED` 默认关闭。开启孤儿证据回收前先按[管理员手册](admin-guide.md)第 4 节确认入库闸门正常并核对宽限期天数；该路径会永久删除 OSS 对象，不可恢复。建议先只部署代码、保持开关关闭并观察一轮计数，再显式开启。
 - 不记录 Cookie、Authorization、设备令牌、OSS key 或密码；这些字段由应用日志脱敏配置拦截。
