@@ -335,11 +335,12 @@ export function OperationsDesk({
               canWrite={canWriteCampaigns}
               csrfToken={csrfToken}
               initialEditing={createRequested}
+              templates={templates}
               onOpenRuns={() => {
                 setRunPreset(null);
                 setView('runs');
               }}
-              onCreated={(campaign) => setCampaigns((current) => [campaign, ...current])}
+              onChanged={() => setRefreshKey((key) => key + 1)}
             />
           ) : null}
           {view === 'runs' ? <RunsPage preset={runPreset} runs={runs} /> : null}
@@ -364,7 +365,11 @@ export function OperationsDesk({
             />
           ) : null}
           {view === 'templates' && canManageMembers ? (
-            <TemplatesPage templates={templates} />
+            <TemplatesPage
+              csrfToken={csrfToken}
+              templates={templates}
+              onChanged={() => setRefreshKey((key) => key + 1)}
+            />
           ) : null}
           {view === 'audit' && canManageMembers ? <AuditPage events={auditEvents} /> : null}
         </main>

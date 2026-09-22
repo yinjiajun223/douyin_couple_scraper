@@ -621,6 +621,18 @@ textarea:focus {
   font-weight: 700;
   letter-spacing: 0.08em;
 }
+.table-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.device-history-note {
+  padding: 14px 20px;
+  border-top: 1px solid #e7eaf0;
+  color: var(--graphite);
+  font-size: 12px;
+  line-height: 1.7;
+}
 .member-row,
 .device-row {
   display: grid;
@@ -903,6 +915,43 @@ textarea:focus {
 .campaign-card p {
   color: var(--graphite);
   font-size: 12px;
+}
+.campaign-rule-summary {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+.campaign-card .campaign-card-actions,
+.member-row .campaign-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.campaign-confirm-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 20px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--amber);
+  border-radius: 10px;
+  background: #fdf9f1;
+  font-size: 13px;
+}
+.campaign-confirm-strip input {
+  min-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: 13px;
+}
+.campaign-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 .live-sync {
   display: inline-flex;
@@ -2164,7 +2213,9 @@ textarea:focus {
   .campaign-card {
     grid-template-columns: 5px minmax(0, 1fr);
   }
-  .campaign-card > button {
+  .campaign-card > button,
+  .campaign-card > .role-chip,
+  .campaign-card > .campaign-card-actions {
     grid-column: 2;
     justify-self: start;
   }

@@ -1,4 +1,7 @@
+import type { CampaignRuleSet } from '@douyin/contracts';
+
 export type Role = 'admin' | 'operator' | 'readonly';
+
 export type View =
   'today' | 'campaigns' | 'runs' | 'candidates' | 'members' | 'devices' | 'templates' | 'audit';
 
@@ -25,12 +28,15 @@ export interface Device {
   status: 'active' | 'revoked';
   collectorVersion: string | null;
   lastSeenAt: string | null;
+  revokedAt: string | null;
 }
 
 export interface CampaignSummary {
   id: string;
   name: string;
   recommendation_profile_description: string | null;
+  rules_json: CampaignRuleSet;
+  source_template_id: string | null;
   status: 'active' | 'archived';
   version: number;
 }
@@ -189,6 +195,7 @@ export interface CampaignTemplateSummary {
   id: string;
   name: string;
   description: string | null;
+  rules_json: CampaignRuleSet;
   version: number;
 }
 

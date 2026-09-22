@@ -19,6 +19,12 @@ export function DevicesPage({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [confirmDevice, setConfirmDevice] = useState<string | null>(null);
+  const [showRevoked, setShowRevoked] = useState(false);
+
+  // 已撤销设备无法删除（被采集观测记录外键引用），默认隐藏以免列表越用越长。
+  const activeDevices = devices.filter((device) => device.status === 'active');
+  const revokedCount = devices.length - activeDevices.length;
+  const visibleDevices = showRevoked ? devices : activeDevices;
 
   async function createPairingCode() {
     if (busy) return;
@@ -52,7 +58,7 @@ export function DevicesPage({
       });
       if (!response.ok) throw new Error('revoke failed');
       setConfirmDevice(null);
-      setMessage('授权已撤销，该设备不能继续同步。');
+      setMessage('授权已撤销，该设备不能继续同步；如需继续使用，请在本机重新配对。');
       onChanged();
     } catch {
       setMessage('撤销失败。请确认你有权管理该设备，并检查网络。');
@@ -118,10 +124,25 @@ export function DevicesPage({
       <div className="data-panel">
         <div className="table-heading">
           <span>已授权设备</span>
-          <span>{devices.length} 台</span>
+          <span className="table-heading-actions">
+            <span>
+              {showRevoked
+                ? `${activeDevices.length} 台在用 · ${revokedCount} 台已撤销`
+                : `${activeDevices.length} 台在用`}
+            </span>
+            {revokedCount ? (
+              <button
+                className="text-button dark-text-button"
+                onClick={() => setShowRevoked((value) => !value)}
+                type="button"
+              >
+                {showRevoked ? '隐藏已撤销' : `显示已撤销 (${revokedCount})`}
+              </button>
+            ) : null}
+          </span>
         </div>
-        {devices.length ? (
-          devices.map((device) => (
+        {visibleDevices.length ? (
+          visibleDevices.map((device) => (
             <article className="device-row" key={device.id}>
               <span className={`device-light ${device.status}`} aria-hidden="true" />
               <div>
@@ -132,7 +153,9 @@ export function DevicesPage({
               </div>
               <span>
                 {device.status === 'revoked'
-                  ? '已撤销'
+                  ? device.revokedAt
+                    ? `已撤销 · ${formatRunTime(device.revokedAt)}`
+                    : '已撤销'
                   : device.lastSeenAt
                     ? `最近连接 ${formatRunTime(device.lastSeenAt)}`
                     : '尚未上线'}
@@ -172,8 +195,19 @@ export function DevicesPage({
             </article>
           ))
         ) : (
-          <EmptyPanel text="还没有配对设备。生成配对码后，在同事电脑的采集助手中输入。" />
+          <EmptyPanel
+            text={
+              revokedCount
+                ? '当前没有在用的设备。已撤销的设备可以用上方开关查看。'
+                : '还没有配对设备。生成配对码后，在同事电脑的采集助手中输入。'
+            }
+          />
         )}
+        {showRevoked && revokedCount ? (
+          <p className="device-history-note">
+            已撤销设备保留为历史记录，无法删除；成员需在本机重新配对后才能继续同步。
+          </p>
+        ) : null}
       </div>
     </section>
   );

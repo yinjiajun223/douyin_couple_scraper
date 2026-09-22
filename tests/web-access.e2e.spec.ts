@@ -482,6 +482,49 @@ for (const role of ['admin', 'operator', 'readonly'] as const) {
   });
 }
 
+test('采集设备默认只列在用设备，已撤销设备作为只读历史按需展开', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.unroute('**/devices');
+  const device = (id: string, name: string, status: 'active' | 'revoked') => ({
+    id,
+    name,
+    ownerDisplayName: '运营同事',
+    status,
+    collectorVersion: '0.1.5',
+    parserVersion: '0.1.5',
+    lastSeenAt: '2026-09-18T08:00:00.000Z',
+    revokedAt: status === 'revoked' ? '2026-09-19T08:00:00.000Z' : null,
+  });
+  await page.route('**/devices', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: {
+        devices: [
+          device('device-live', '在用电脑', 'active'),
+          device('device-old', '已撤销电脑', 'revoked'),
+        ],
+      },
+    }),
+  );
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '采集设备', exact: true }).click();
+  await expect(page.getByText('在用电脑')).toBeVisible();
+  await expect(page.getByText('已撤销电脑')).toHaveCount(0);
+  await expect(page.getByText('1 台在用', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: /显示已撤销/ }).click();
+  const revokedRow = page.locator('.device-row').filter({ hasText: '已撤销电脑' });
+  await expect(revokedRow).toBeVisible();
+  await expect(revokedRow.getByText(/已撤销 · /)).toBeVisible();
+  // 已撤销设备是历史，不能恢复、改名或删除。
+  await expect(revokedRow.getByRole('button')).toHaveCount(0);
+  await expect(page.getByText(/已撤销设备保留为历史记录，无法删除/)).toBeVisible();
+
+  await page.getByRole('button', { name: '隐藏已撤销' }).click();
+  await expect(page.getByText('已撤销电脑')).toHaveCount(0);
+});
+
 test('运营可配置硬筛规则与停止条件，保存后立即回显', async ({ page }) => {
   await mockAuthenticatedWorkspace(page, 'operator');
   let submittedCampaign: Record<string, unknown> | undefined;
@@ -539,6 +582,265 @@ test('运营可配置硬筛规则与停止条件，保存后立即回显', async
       },
     },
   });
+});
+
+const campaignRulesFixture = {
+  schemaVersion: 2,
+  hardRules: [
+    { id: 'followers', kind: 'hard', type: 'follower-range', min: 0, max: 5_000 },
+    {
+      id: 'recent-viral-post',
+      kind: 'hard',
+      type: 'recent-post-likes',
+      windowDays: 15,
+      minimumLikes: 10_000,
+      minimumMatchingPosts: 2,
+    },
+  ],
+  manualChecks: [],
+  stopConditions: { maxFeedItems: 100, maxCreatorProfiles: 40 },
+  pacing: { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
+};
+
+const existingCampaignFixture = {
+  id: 'campaign-edit',
+  name: '校园圈层',
+  status: 'active',
+  version: 3,
+  recommendation_profile_description: '校园日常',
+  source_template_id: null,
+  rules_json: campaignRulesFixture,
+};
+
+test('管理员可编辑任务条件，未填写的停止条件保持未设置', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.route('**/campaigns', async (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: { campaigns: [existingCampaignFixture] },
+    }),
+  );
+  let patched: Record<string, unknown> | undefined;
+  await page.route('**/campaigns/campaign-edit', async (route) => {
+    patched = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { id: 'campaign-edit', version: 4 },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '筛选任务', exact: true }).click();
+  await expect(page.getByText(/粉丝 0–5000 · 爆款 15 天 \/ 10000 赞/)).toBeVisible();
+  await page.getByRole('button', { name: '编辑', exact: true }).click();
+
+  await expect(page.getByLabel('粉丝上限')).toHaveValue('5000');
+  await expect(page.getByLabel('最长运行分钟')).toHaveValue('');
+  await page.getByLabel('粉丝上限').fill('9000');
+  await page.getByRole('button', { name: '保存修改' }).click();
+
+  await expect(page.getByRole('status')).toContainText('冻结独立快照');
+  expect(patched).toMatchObject({
+    name: '校园圈层',
+    expectedVersion: 3,
+    rules: {
+      hardRules: [
+        { id: 'followers', type: 'follower-range', min: 0, max: 9_000 },
+        { id: 'recent-viral-post', windowDays: 15, minimumLikes: 10_000, minimumMatchingPosts: 2 },
+      ],
+      stopConditions: { maxFeedItems: 100, maxCreatorProfiles: 40 },
+      pacing: { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
+    },
+  });
+});
+
+test('任务被同事改过时提示冲突并刷新，不做静默合并', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  let listRequests = 0;
+  await page.route('**/campaigns', async (route) => {
+    listRequests += 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { campaigns: [existingCampaignFixture] },
+    });
+  });
+  await page.route('**/campaigns/campaign-edit', async (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      json: { code: 'VERSION_CONFLICT', currentVersion: 4 },
+    }),
+  );
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '筛选任务', exact: true }).click();
+  await page.getByRole('button', { name: '编辑', exact: true }).click();
+  await page.getByLabel('粉丝上限').fill('9000');
+  const beforeSave = listRequests;
+  await page.getByRole('button', { name: '保存修改' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('已被同事修改');
+  await expect(page.getByRole('button', { name: '保存修改' })).toHaveCount(0);
+  await expect.poll(() => listRequests, { timeout: 3_000 }).toBeGreaterThan(beforeSave);
+});
+
+test('复制任务需要新名称，归档会明确说明不能恢复', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.route('**/campaigns', async (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: { campaigns: [existingCampaignFixture] },
+    }),
+  );
+  let copyBody: Record<string, unknown> | undefined;
+  await page.route('**/campaigns/campaign-edit/copy', async (route) => {
+    copyBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      json: { id: 'campaign-copy', version: 1 },
+    });
+  });
+  let archiveHeaders: Record<string, string> | undefined;
+  await page.route('**/campaigns/campaign-edit/archive', async (route) => {
+    archiveHeaders = route.request().headers();
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { id: 'campaign-edit', version: 4 },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '筛选任务', exact: true }).click();
+  await page.getByRole('button', { name: '复制', exact: true }).click();
+  await expect(page.getByPlaceholder('新任务名称')).toHaveValue('校园圈层 副本');
+  await page.getByRole('button', { name: '确认复制' }).click();
+  await expect(page.getByRole('status')).toContainText('已复制为「校园圈层 副本」');
+  expect(copyBody).toEqual({ name: '校园圈层 副本' });
+
+  await page.getByRole('button', { name: '归档', exact: true }).click();
+  await expect(page.getByText(/不能再创建运行/)).toBeVisible();
+  await page.getByRole('button', { name: '确认归档' }).click();
+  await expect(page.getByRole('status')).toContainText('已归档');
+  expect(archiveHeaders?.['content-type']).toBeUndefined();
+});
+
+test('新建任务可以选模板并沿用模板条件', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.route('**/campaign-templates', async (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: {
+        templates: [
+          {
+            id: 'template-campus',
+            name: '校园模板',
+            description: '校园素人',
+            version: 2,
+            rules_json: {
+              ...campaignRulesFixture,
+              hardRules: [
+                { id: 'followers', kind: 'hard', type: 'follower-range', min: 200, max: 7_000 },
+              ],
+              stopConditions: { targetCandidates: 25 },
+            },
+          },
+        ],
+      },
+    }),
+  );
+  let submitted: Record<string, unknown> | undefined;
+  await page.route('**/campaigns', async (route) => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        json: { id: 'campaign-from-template', version: 1 },
+      });
+      return;
+    }
+    await route.fulfill({ contentType: 'application/json', json: { campaigns: [] } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '筛选任务', exact: true }).click();
+  await page.getByRole('button', { name: '新建筛选任务' }).click();
+  await page.getByLabel('从模板开始（可选）').selectOption('template-campus');
+  await expect(page.getByLabel('粉丝上限')).toHaveValue('7000');
+  await expect(page.getByLabel('目标候选数')).toHaveValue('25');
+  await page.getByLabel('任务名称').fill('校园秋季');
+  await page.getByRole('button', { name: '保存筛选任务' }).click();
+
+  await expect(page.getByRole('status')).toContainText('校园秋季');
+  expect(submitted).toMatchObject({
+    name: '校园秋季',
+    templateId: 'template-campus',
+    rules: {
+      hardRules: [{ type: 'follower-range', min: 200, max: 7_000 }],
+      stopConditions: { targetCandidates: 25 },
+      pacing: { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
+    },
+  });
+});
+
+test('管理员可以新建和归档筛选模板', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.route('**/campaign-templates', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        json: { id: 'template-new', version: 1 },
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      json: {
+        templates: [
+          {
+            id: 'template-campus',
+            name: '校园模板',
+            description: '校园素人',
+            version: 2,
+            rules_json: campaignRulesFixture,
+          },
+        ],
+      },
+    });
+  });
+  let archived = 0;
+  await page.route('**/campaign-templates/template-campus/archive', async (route) => {
+    archived += 1;
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { id: 'template-campus', version: 3 },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '筛选模板', exact: true }).click();
+  await expect(page.getByText(/粉丝 0–5000 · 爆款 15 天 \/ 10000 赞/)).toBeVisible();
+
+  await page.getByRole('button', { name: '新建模板' }).click();
+  await page.getByLabel('模板名称').fill('城市探店');
+  await page.getByLabel('粉丝上限').fill('20000');
+  await page.getByRole('button', { name: '保存模板' }).click();
+  await expect(page.getByRole('status')).toContainText('模板「城市探店」已保存');
+
+  await page.getByRole('button', { name: '归档', exact: true }).click();
+  await expect(page.getByText(/不再出现在新建任务的下拉里/)).toBeVisible();
+  await page.getByRole('button', { name: '确认归档' }).click();
+  await expect(page.getByRole('status')).toContainText('已归档');
+  expect(archived).toBe(1);
+});
+
+test('运营成员看不到筛选模板入口', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'operator');
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '筛选任务', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '筛选模板', exact: true })).toHaveCount(0);
 });
 
 test('运行监控实时显示进度、停止原因、领取设备和错误', async ({ page }) => {
