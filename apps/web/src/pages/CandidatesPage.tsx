@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { CandidateDetailData, CandidateSummary, Member, Role } from '../types';
 import { readResponse } from '../api/client';
-import { candidateDateOptions, pipelineStatusOptions, reviewDecisionOptions } from '../constants';
+import {
+  candidateDateOptions,
+  candidateSections,
+  pipelineStatusOptions,
+  reviewDecisionOptions,
+} from '../constants';
 import {
   candidateDateRange,
   candidateMatchesLibraryView,
@@ -36,9 +41,13 @@ export function CandidatesPage({
   preset: 'pending_review' | 'to_contact' | 'mine' | null;
   role: Role;
 }) {
-  const [candidateSection, setCandidateSection] = useState<'qualified' | 'needs_evidence'>(
-    'qualified',
+  // preset 与分区轴是同一维度（design.md D8）：待复核 / 待联系直接落到对应分区；
+  // 「我负责的」不按阶段过滤，落到跨阶段的「全部」再叠加 ownerUserId，
+  // 这样工作台计数器的数字才和分区列表对得上。
+  const [candidateSection, setCandidateSection] = useState(
+    candidateSections.find((section) => section.value === preset) ?? candidateSections[0],
   );
+  const mineOnly = preset === 'mine';
   const [datePreset, setDatePreset] = useState<
     'today' | 'yesterday' | '7d' | '30d' | 'custom' | 'all'
   >('30d');
@@ -53,15 +62,17 @@ export function CandidatesPage({
   const [detail, setDetail] = useState<CandidateDetailData | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [libraryToken, setLibraryToken] = useState(0);
   const detailRequest = useRef(0);
+  const libraryRequest = useRef(0);
+  const keepSelection = useRef(false);
 
   function buildCandidateQuery(cursor?: string) {
     const query = new URLSearchParams({
-      hardFilterStatus: candidateSection === 'qualified' ? 'pass' : 'unknown',
       limit: '50',
+      pipelineStatuses: candidateSection.statuses.join(','),
     });
-    if (preset === 'mine') query.set('ownerUserId', currentUserId);
-    else if (preset) query.set('pipelineStatus', preset);
+    if (mineOnly) query.set('ownerUserId', currentUserId);
     if (role === 'admin' && memberUserId) query.set('memberUserId', memberUserId);
     const range = candidateDateRange(datePreset, customFrom, customTo);
     if (range.from) query.set('discoveredFrom', range.from);
@@ -71,12 +82,20 @@ export function CandidatesPage({
   }
 
   useEffect(() => {
+    // 保存后重拉列表时不能清空当前选中的达人，否则详情面板会跟着一起消失。
+    const preserveSelection = keepSelection.current;
+    keepSelection.current = false;
+    // 「加载更多」没有中断机制，筛选条件一变就作废在途请求，
+    // 否则旧分区的 nextCursor 会覆盖新分区的，翻页随之重复或漏掉达人。
+    libraryRequest.current += 1;
     if (datePreset === 'custom' && (!customFrom || !customTo)) return;
     const controller = new AbortController();
     setLibraryLoading(true);
     setLibraryError('');
-    setSelectedCandidateId(null);
-    setDetail(null);
+    if (!preserveSelection) {
+      setSelectedCandidateId(null);
+      setDetail(null);
+    }
     void fetch(`/candidates?${buildCandidateQuery()}`, {
       credentials: 'include',
       signal: controller.signal,
@@ -85,7 +104,7 @@ export function CandidatesPage({
       .then((result) => {
         setVisibleCandidates(
           result.candidates.filter((candidate) =>
-            candidateMatchesLibraryView(candidate, candidateSection, preset, currentUserId),
+            candidateMatchesLibraryView(candidate, candidateSection.value, mineOnly, currentUserId),
           ),
         );
         setNextCursor(result.nextCursor ?? null);
@@ -98,20 +117,24 @@ export function CandidatesPage({
         if (!controller.signal.aborted) setLibraryLoading(false);
       });
     return () => controller.abort();
-  }, [candidateSection, customFrom, customTo, datePreset, memberUserId, preset]);
+  }, [candidateSection, customFrom, customTo, datePreset, libraryToken, memberUserId, preset]);
 
   async function loadMoreCandidates() {
     if (!nextCursor || libraryLoading) return;
+    const requestId = libraryRequest.current;
     setLibraryLoading(true);
     setLibraryError('');
     try {
       const result = await fetch(`/candidates?${buildCandidateQuery(nextCursor)}`, {
         credentials: 'include',
       }).then(readResponse<{ candidates: CandidateSummary[]; nextCursor: string | null }>);
+      if (requestId !== libraryRequest.current) return;
       setVisibleCandidates((current) => {
         const byId = new Map(current.map((candidate) => [candidate.id, candidate]));
         for (const candidate of result.candidates) {
-          if (candidateMatchesLibraryView(candidate, candidateSection, preset, currentUserId)) {
+          if (
+            candidateMatchesLibraryView(candidate, candidateSection.value, mineOnly, currentUserId)
+          ) {
             byId.set(candidate.id, candidate);
           }
         }
@@ -119,16 +142,20 @@ export function CandidatesPage({
       });
       setNextCursor(result.nextCursor ?? null);
     } catch {
-      setLibraryError('下一页加载失败，请重试。');
+      if (requestId === libraryRequest.current) setLibraryError('下一页加载失败，请重试。');
     } finally {
-      setLibraryLoading(false);
+      if (requestId === libraryRequest.current) setLibraryLoading(false);
     }
   }
 
   const groupedCandidates = groupCandidatesByDate(visibleCandidates);
+  const emptyLibraryText =
+    candidateSection.value === 'all'
+      ? '还没有入库的达人。采集同步并满足全部硬筛条件后会进入这里。'
+      : `暂时没有处于「${candidateSection.label}」阶段的达人。`;
 
-  function showCandidateSection(nextSection: 'qualified' | 'needs_evidence') {
-    if (nextSection === candidateSection) return;
+  function showCandidateSection(nextSection: (typeof candidateSections)[number]) {
+    if (nextSection.value === candidateSection.value) return;
     detailRequest.current += 1;
     setCandidateSection(nextSection);
     setSelectedCandidateId(null);
@@ -157,6 +184,14 @@ export function CandidatesPage({
     }
   }
 
+  // 复核会在服务端同一次请求里推进阶段并递增版本，提交后必须重拉详情与分区列表，
+  // 否则详情面板会停留在过期的阶段和 candidateVersion，运营的下一次操作必然 409。
+  function refreshAfterSave(candidateId: string) {
+    keepSelection.current = true;
+    setLibraryToken((current) => current + 1);
+    void openCandidate(candidateId);
+  }
+
   return (
     <section>
       <header className="section-page-header">
@@ -166,27 +201,23 @@ export function CandidatesPage({
           <p className="lede">运营仅查看自己采集或被分配的达人；管理员可查看全团队数据。</p>
         </div>
         <span className="library-count">
-          {candidateSection === 'qualified'
-            ? `${visibleCandidates.length} 位符合条件`
-            : `${visibleCandidates.length} 位待补证据`}
+          {candidateSection.value === 'all'
+            ? `${visibleCandidates.length} 位达人`
+            : `${visibleCandidates.length} 位${candidateSection.label}`}
         </span>
       </header>
 
       <div aria-label="达人库分区" className="candidate-library-switcher" role="group">
-        <button
-          aria-pressed={candidateSection === 'qualified'}
-          onClick={() => showCandidateSection('qualified')}
-          type="button"
-        >
-          符合条件
-        </button>
-        <button
-          aria-pressed={candidateSection === 'needs_evidence'}
-          onClick={() => showCandidateSection('needs_evidence')}
-          type="button"
-        >
-          待补证据
-        </button>
+        {candidateSections.map((section) => (
+          <button
+            aria-pressed={section.value === candidateSection.value}
+            key={section.value}
+            onClick={() => showCandidateSection(section)}
+            type="button"
+          >
+            {section.label}
+          </button>
+        ))}
       </div>
 
       <div className="candidate-library-filters" aria-label="达人库筛选">
@@ -244,12 +275,12 @@ export function CandidatesPage({
         </p>
       ) : null}
 
-      {visibleCandidates.length ? (
+      {/* 复核会把达人推出当前分区，分区因此被清空是常态；只要还选中着达人，
+          两栏布局就必须留着，否则运营刚点完保存，确认文案会跟着详情面板一起消失。 */}
+      {visibleCandidates.length || selectedCandidateId ? (
         <div className="candidate-workspace">
-          <div
-            className="candidate-list"
-            aria-label={candidateSection === 'qualified' ? '符合条件达人列表' : '待补证据达人列表'}
-          >
+          <div className="candidate-list" aria-label={`${candidateSection.label}达人列表`}>
+            {visibleCandidates.length ? null : <EmptyPanel text={emptyLibraryText} />}
             {groupedCandidates.map((group) => (
               <div className="candidate-date-group" key={group.key}>
                 <div className="candidate-date-heading">
@@ -273,8 +304,8 @@ export function CandidatesPage({
                       </small>
                       <em>{candidate.tags.join(' · ') || '暂无标签'}</em>
                     </span>
-                    <b className={`evidence-outcome evidence-${candidate.hardFilterStatus}`}>
-                      {hardFilterLabel(candidate.hardFilterStatus)}
+                    <b className="candidate-stage">
+                      {pipelineStatusLabel(candidate.pipelineStatus)}
                     </b>
                   </button>
                 ))}
@@ -308,6 +339,7 @@ export function CandidatesPage({
                 canWrite={canWrite}
                 csrfToken={csrfToken}
                 detail={detail}
+                onSaved={() => refreshAfterSave(detail.candidate.id)}
               />
             ) : null}
           </div>
@@ -318,13 +350,7 @@ export function CandidatesPage({
         </div>
       ) : (
         <div className="data-panel">
-          <EmptyPanel
-            text={
-              candidateSection === 'qualified'
-                ? '还没有硬筛通过的达人。采集同步并满足全部硬筛条件后会进入这里。'
-                : '暂时没有待补证据的达人。硬筛数据无法确认时会进入这里。'
-            }
-          />
+          <EmptyPanel text={emptyLibraryText} />
         </div>
       )}
     </section>
@@ -335,10 +361,12 @@ export function CandidateDetailView({
   detail,
   canWrite,
   csrfToken,
+  onSaved,
 }: {
   detail: CandidateDetailData;
   canWrite: boolean;
   csrfToken: string;
+  onSaved: () => void;
 }) {
   const latest = detail.observations[0];
   const [workflowMessage, setWorkflowMessage] = useState('');
@@ -387,6 +415,7 @@ export function CandidateDetailView({
         setWorkflowMessage('保存失败，请检查必填内容和当前阶段。');
         return false;
       }
+      onSaved();
       return true;
     } catch {
       setWorkflowMessage('网络连接失败，尚未确认保存。请重新打开达人确认状态后重试。');

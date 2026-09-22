@@ -96,6 +96,20 @@ export function validateProductionEnvironment(environment) {
     }
   }
 
+  // 孤儿证据回收会永久删除 OSS 对象，因此允许缺省（应用侧默认关闭），
+  // 但一旦写了就必须能被明确解析：'yes'/'on' 之类会在应用侧被拒，宁可预检就拦下来。
+  const orphanEnabled = environment.ORPHAN_MEDIA_CLEANUP_ENABLED;
+  if (orphanEnabled !== undefined && !['true', 'false', '1', '0'].includes(orphanEnabled)) {
+    errors.push('ORPHAN_MEDIA_CLEANUP_ENABLED 只能是 true/false/1/0');
+  }
+  const orphanGraceDays = environment.ORPHAN_MEDIA_GRACE_DAYS;
+  if (
+    orphanGraceDays !== undefined &&
+    (!/^\d+$/u.test(orphanGraceDays) || Number(orphanGraceDays) < 1)
+  ) {
+    errors.push('ORPHAN_MEDIA_GRACE_DAYS 必须是不小于 1 的整数天数');
+  }
+
   return errors;
 }
 

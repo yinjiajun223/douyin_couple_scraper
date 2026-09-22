@@ -18,6 +18,13 @@ const requiredSecret = (minimumLength: number) =>
 
 const optionalSecret = (minimumLength: number) => requiredSecret(minimumLength).optional();
 
+// 环境变量没有布尔类型；只接受明确的开关字面量，避免 'yes' / 'on' 之类被静默当成关闭。
+const booleanFlag = (defaultValue: boolean) =>
+  z
+    .enum(['true', 'false', '1', '0'])
+    .default(defaultValue ? 'true' : 'false')
+    .transform((value) => value === 'true' || value === '1');
+
 const apiConfigSchema = z.object({
   NODE_ENV: nodeEnvironmentSchema,
   API_HOST: z.string().min(1).default('0.0.0.0'),
@@ -47,6 +54,10 @@ const workerConfigSchema = z.object({
   MEDIA_RETENTION_DAYS: z.coerce.number().int().min(1).max(3_650).default(180),
   MEDIA_CLEANUP_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
   MEDIA_CLEANUP_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(3_600_000),
+  // 孤儿证据回收删掉的是 OSS 对象，不可恢复，因此默认关闭、必须显式开启；
+  // 宽限期要长于「素材确认 → 候选行建立」的最大正常间隔，首次上线取保守的 7 天。
+  ORPHAN_MEDIA_CLEANUP_ENABLED: booleanFlag(false),
+  ORPHAN_MEDIA_GRACE_DAYS: z.coerce.number().int().min(1).max(3_650).default(7),
 });
 
 const collectorConfigSchema = z

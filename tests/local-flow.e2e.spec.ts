@@ -98,11 +98,39 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
         launchCount += 1;
         sourceBrowser = await browser.newContext();
         await sourceBrowser.route('https://www.douyin.com/**', (route) => {
-          const profile = new URL(route.request().url()).pathname.startsWith('/user/');
+          const pathname = new URL(route.request().url()).pathname;
           const publishedAt = new Date(Date.now() - 86_400_000).toISOString();
-          const body = profile
-            ? `<h1 data-e2e="user-title">流程测试同学</h1><p data-e2e="user-desc">校园日常</p><p>粉丝 1200</p><article data-e2e="user-post-item"><a href="/video/7600000000000000001">公开作品</a><span data-e2e="video-like-count">1.2万</span><time datetime="${publishedAt}"></time></article>`
-            : '<article data-e2e="feed-item"><a href="/video/7600000000000000001">公开作品</a><a href="/user/flow-creator">流程测试同学</a><span data-e2e="video-like-count">1.2万</span></article>';
+          // 两位达人通过硬筛（分别走「复核通过」与「复核不通过」两条分区路径），
+          // 第三位粉丝数超出默认规则上限，用于验证未入库达人同样能在运行详情看到判定依据。
+          const creators = [
+            {
+              followers: '1200',
+              nickname: '流程测试同学',
+              slug: 'flow-creator',
+              videoId: '7600000000000000001',
+            },
+            {
+              followers: '1500',
+              nickname: '二号同学',
+              slug: 'second-classmate',
+              videoId: '7600000000000000003',
+            },
+            {
+              followers: '7000',
+              nickname: '超范围同学',
+              slug: 'overflow-classmate',
+              videoId: '7600000000000000002',
+            },
+          ] as const;
+          const profile = (creator: (typeof creators)[number]) =>
+            `<h1 data-e2e="user-title">${creator.nickname}</h1><p data-e2e="user-desc">校园日常</p><p>粉丝 ${creator.followers}</p><article data-e2e="user-post-item"><a href="/video/${creator.videoId}">公开作品</a><span data-e2e="video-like-count">1.2万</span><time datetime="${publishedAt}"></time></article>`;
+          const feedItem = (creator: (typeof creators)[number]) =>
+            `<article data-e2e="feed-item"><a href="/video/${creator.videoId}">公开作品</a><a href="/user/${creator.slug}">${creator.nickname}</a><span data-e2e="video-like-count">1.2万</span></article>`;
+          const matched = creators.find((creator) => pathname.includes(creator.slug));
+          const body =
+            pathname.startsWith('/user/') && matched
+              ? profile(matched)
+              : creators.map(feedItem).join('');
           return route.fulfill({
             contentType: 'text/html',
             body: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>抖音</title></head><body>${body}</body></html>`,
@@ -173,7 +201,7 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await page.getByRole('button', { name: '筛选任务', exact: true }).click();
     await page.getByRole('button', { name: '新建筛选任务' }).click();
     await page.getByLabel('任务名称').fill('流程验收任务');
-    await page.getByLabel('最多浏览作品').fill('1');
+    await page.getByLabel('最多浏览作品').fill('3');
     await page.getByRole('button', { name: '保存筛选任务' }).click();
     await page.getByRole('button', { name: '创建运行', exact: true }).click();
     await expect(page.getByRole('status')).toContainText('人工开始');
@@ -202,7 +230,7 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await expect(localPage.getByText('状态：已完成')).toBeVisible({ timeout: 35_000 });
     expect(launchCount).toBe(2);
     expect(ingestionRequests).toBeGreaterThanOrEqual(3);
-    expect(uploads.size).toBe(1);
+    expect(uploads.size).toBe(2);
     const [counts] = await pool.query<RowDataPacket[]>(
       `SELECT
          (SELECT COUNT(*) FROM creator_observations WHERE workspace_id = ?) AS observations,
@@ -210,31 +238,59 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
          (SELECT COUNT(*) FROM media_objects WHERE workspace_id = ? AND status = 'confirmed') AS evidence`,
       [workspaceId, workspaceId, workspaceId],
     );
-    expect(counts[0]).toMatchObject({ observations: 1, candidates: 1, evidence: 1 });
+    expect(counts[0]).toMatchObject({ observations: 3, candidates: 2, evidence: 2 });
     await localPage.screenshot({
       path: testInfo.outputPath('collector-completed.png'),
       fullPage: true,
     });
+    // 未入库达人没有候选行，运营只能靠运行详情里重算出的判定依据判断为什么没进复核队列。
+    await page.getByRole('button', { name: '运行监控', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '本次运行观察到的达人' })).toBeVisible();
+    await expect(
+      page.locator('.detail-section-heading').filter({ hasText: '本次运行观察到的达人' }),
+    ).toContainText('共 3 位 · 已入库 2 位');
+    const admittedCard = page.locator('.evaluation-card').filter({ hasText: '流程测试同学' });
+    await expect(admittedCard).toContainText('已入库 · 待复核');
+    await expect(admittedCard).toContainText('粉丝 1,200（1200）');
+    await expect(admittedCard).toContainText('命中 12,000 赞');
+    const rejectedCard = page.locator('.evaluation-card').filter({ hasText: '超范围同学' });
+    await expect(rejectedCard).toContainText('未入库 · 不进入复核队列');
+    await expect(rejectedCard).toContainText('粉丝 7,000（7000）');
+    await expect(rejectedCard).toContainText('粉丝范围 · 不通过 · 范围 0–5000');
+    await expect(rejectedCard.locator('.evidence-outcome')).toHaveText('不通过');
+    await page.screenshot({
+      path: testInfo.outputPath('run-observed-creators.png'),
+      fullPage: true,
+    });
     await page.getByRole('button', { name: '达人库', exact: true }).click();
+    // 分区轴默认「全部」：只有取得入库资格的两位达人在列，粉丝超范围的同学根本没有候选行。
+    await expect(page.getByRole('button', { name: '全部', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page.getByRole('button', { name: /超范围同学/ })).toHaveCount(0);
+    await expect(page.locator('.library-count')).toHaveText('2 位达人');
+    await page.getByRole('button', { name: '待复核', exact: true }).click();
+    await expect(page.locator('.library-count')).toHaveText('2 位待复核');
     await page.getByRole('button', { name: /流程测试同学/ }).click();
     await expect(page.getByRole('heading', { name: '私有证据截图' })).toBeVisible();
     await page.getByLabel('理由', { exact: true }).fill('已人工核验公开内容，适合进一步沟通');
     await page.getByRole('button', { name: '保存人工结论' }).click();
     await expect(page.getByText(/最新人工结论：通过/)).toBeVisible();
+    // 复核通过在同一次请求内推进阶段；面板必须自行刷新，否则运营的下一次操作会带着过期版本撞 409。
+    await expect(
+      page.locator('.detail-section-heading').filter({ hasText: '人工复核与合作跟进' }),
+    ).toContainText('待联系');
+    await expect(page.locator('input[name="nextStatus"]')).toHaveValue('to_contact');
+    // 阶段已在服务端推进，列表跟着离开「待复核」分区，运营不需要手工刷新。
+    await expect(page.locator('.library-count')).toHaveText('1 位待复核');
+    await expect(page.getByRole('button', { name: /流程测试同学/ })).toHaveCount(0);
     await page.getByRole('button', { name: /负责人/ }).click();
     await page.getByRole('option', { name: '流程验收员', exact: true }).click();
     await page.getByLabel('联系渠道', { exact: true }).fill('抖音');
     await page.getByLabel('下一步', { exact: true }).fill('人工联系确认合作意愿');
     await page.getByRole('button', { name: '保存联系资料' }).click();
     await expect(page.getByText(/当前负责人：流程验收员/)).toBeVisible();
-    await expect(page.locator('input[name="ownerUserId"]')).toHaveValue(/.+/u);
-    await page.getByRole('button', { name: /下一阶段/ }).click();
-    await page.getByRole('option', { name: '待联系', exact: true }).click();
-    await page.getByRole('button', { name: '更新阶段' }).click();
-    await expect(
-      page.locator('.detail-section-heading').filter({ hasText: '人工复核与合作跟进' }),
-    ).toContainText('待联系');
-    await expect(page.locator('input[name="nextStatus"]')).toHaveValue('to_contact');
     await expect(page.locator('input[name="ownerUserId"]')).toHaveValue(/.+/u);
     await page.getByLabel('联系渠道', { exact: true }).fill('人工抖音联系');
     const savedDetail = page.waitForResponse(
@@ -251,8 +307,37 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await expect(page.getByLabel('联系渠道', { exact: true })).toHaveValue('人工抖音联系');
     await expect(page.getByText(/当前负责人：流程验收员/)).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('candidate-reviewed.png'), fullPage: true });
+    // 另一条腿：复核不通过把阶段推到「不符合」，达人从「待复核」分区落到「不合适」分区。
+    await page.getByRole('button', { name: /二号同学/ }).click();
+    const reviewForm = page.locator('form.workflow-form').filter({ hasText: '复核结论' });
+    await reviewForm.getByRole('button', { name: /^结论/u }).click();
+    await reviewForm.getByRole('option', { name: '不符合', exact: true }).click();
+    await page.getByLabel('理由', { exact: true }).fill('人设与校园情侣定位不符');
+    await page.getByRole('button', { name: '保存人工结论' }).click();
+    await expect(page.getByText(/最新人工结论：不符合/)).toBeVisible();
+    await expect(
+      page.locator('.detail-section-heading').filter({ hasText: '人工复核与合作跟进' }),
+    ).toContainText('不符合');
+    await expect(page.locator('.library-count')).toHaveText('0 位待复核');
+    await page.getByRole('button', { name: '不合适', exact: true }).click();
+    await expect(page.locator('.library-count')).toHaveText('1 位不合适');
+    await expect(page.getByRole('button', { name: /二号同学/ })).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath('library-unsuitable-section.png'),
+      fullPage: true,
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole('button', { name: '今日工作', exact: true }).click();
+    // 工作台三个计数器必须与达人库分区同口径：待复核清零，待联系与「我负责的」各剩 1 位。
+    for (const [label, expected] of [
+      ['待复核', '0'],
+      ['待联系', '1'],
+      ['我负责的', '1'],
+    ] as const) {
+      await expect(
+        page.locator('.dashboard-card').filter({ hasText: label }).locator('strong'),
+      ).toHaveText(expected);
+    }
     await page.screenshot({ path: testInfo.outputPath('workspace-mobile.png'), fullPage: true });
     expect(
       await page.evaluate(

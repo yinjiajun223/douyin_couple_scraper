@@ -14,10 +14,18 @@ export function workerStatus() {
 export async function runMediaCleanupOnce(
   pool: Pool,
   storage: ObjectStorageClient,
-  config: Pick<WorkerConfig, 'MEDIA_CLEANUP_BATCH_SIZE' | 'MEDIA_RETENTION_DAYS'>,
+  config: Pick<
+    WorkerConfig,
+    | 'MEDIA_CLEANUP_BATCH_SIZE'
+    | 'MEDIA_RETENTION_DAYS'
+    | 'ORPHAN_MEDIA_CLEANUP_ENABLED'
+    | 'ORPHAN_MEDIA_GRACE_DAYS'
+  >,
 ) {
   return cleanupMediaObjects(pool, storage, {
     batchSize: config.MEDIA_CLEANUP_BATCH_SIZE,
+    orphanCleanupEnabled: config.ORPHAN_MEDIA_CLEANUP_ENABLED,
+    orphanGraceDays: config.ORPHAN_MEDIA_GRACE_DAYS,
     retentionDays: config.MEDIA_RETENTION_DAYS,
   });
 }

@@ -503,8 +503,10 @@ export class CollectorRuntime {
           postObservationId: post.platformPostId,
         })),
       });
+      // 只有取得入库资格的达人才需要证据。fail 与 unknown 都不会产生候选行，
+      // 截图在服务端没有消费者，采下来只会留下等 worker 回收的孤儿对象。
       state.screenshot =
-        filter.outcome === 'fail'
+        filter.outcome !== 'pass'
           ? null
           : (await profilePage.screenshot({ type: 'jpeg', quality: 75, fullPage: false })).toString(
               'base64',

@@ -33,6 +33,30 @@ export const pipelineStatusOptions = [
   { label: '不合作', value: 'declined' },
 ] as const;
 
+export type PipelineStatus = (typeof pipelineStatusOptions)[number]['value'];
+
+// 7 个合作阶段收成 5 个分区以控制标签数量，另加一个跨阶段的「全部」承接工作台的
+// 「我负责的」卡片（该计数器不按阶段过滤）。分组在服务端过滤，前端不再以硬筛结论
+// 作为主分区轴。
+export const candidateSections = [
+  {
+    label: '全部',
+    statuses: pipelineStatusOptions.map((option) => option.value),
+    value: 'all',
+  },
+  { label: '待复核', statuses: ['pending_review'], value: 'pending_review' },
+  { label: '待联系', statuses: ['to_contact'], value: 'to_contact' },
+  { label: '跟进中', statuses: ['contacted', 'communicating'], value: 'following_up' },
+  { label: '已合作', statuses: ['partnered'], value: 'partnered' },
+  { label: '不合适', statuses: ['unsuitable', 'declined'], value: 'unsuitable' },
+] as const satisfies ReadonlyArray<{
+  label: string;
+  statuses: readonly PipelineStatus[];
+  value: string;
+}>;
+
+export type CandidateSection = (typeof candidateSections)[number]['value'];
+
 export const memberRoleOptions = [
   { label: '运营', value: 'operator' },
   { label: '只读', value: 'readonly' },

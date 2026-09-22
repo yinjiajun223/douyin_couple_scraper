@@ -12,6 +12,16 @@ import {
 } from './candidate-access.js';
 import type { CandidateAccessContext } from './candidate-access.js';
 
+const pipelineStatusSchema = z.enum([
+  'pending_review',
+  'unsuitable',
+  'to_contact',
+  'contacted',
+  'communicating',
+  'partnered',
+  'declined',
+]);
+
 const candidateFilterSchema = z
   .object({
     actorRole: z.enum(['admin', 'operator', 'readonly']),
@@ -28,17 +38,8 @@ const candidateFilterSchema = z
     followerMax: z.number().int().nonnegative().optional(),
     hardFilterStatus: z.enum(['pass', 'fail', 'unknown']).optional(),
     manualDecision: z.enum(['pending', 'approved', 'rejected']).optional(),
-    pipelineStatus: z
-      .enum([
-        'pending_review',
-        'unsuitable',
-        'to_contact',
-        'contacted',
-        'communicating',
-        'partnered',
-        'declined',
-      ])
-      .optional(),
+    pipelineStatus: pipelineStatusSchema.optional(),
+    pipelineStatuses: z.array(pipelineStatusSchema).min(1).max(7).optional(),
     ownerUserId: z.uuid().optional(),
     tagNames: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
     limit: z.number().int().min(1).max(200).default(100),
@@ -294,7 +295,10 @@ export async function listCandidatePage(pool: Pool, rawFilters: unknown): Promis
     predicates.push('candidates.hard_filter_status = ?');
     parameters.push(filters.hardFilterStatus);
   } else {
-    predicates.push("candidates.hard_filter_status <> 'fail'");
+    // hard_filter_status 记录的是「创建时的入库资格」，晋级后不再随后续运行改写。
+    // 默认只放行取得资格的行，与 operations-dashboard 的三个计数器保持同一口径；
+    // 闸门上线前留下的存量 fail / unknown 行只能靠显式 hardFilterStatus 检索。
+    predicates.push("candidates.hard_filter_status = 'pass'");
   }
   if (filters.manualDecision) {
     predicates.push("COALESCE(manual.decision, 'pending') = ?");
@@ -303,6 +307,16 @@ export async function listCandidatePage(pool: Pool, rawFilters: unknown): Promis
   if (filters.pipelineStatus) {
     predicates.push('candidates.pipeline_status = ?');
     parameters.push(filters.pipelineStatus);
+  }
+  const pipelineStatuses = [...new Set(filters.pipelineStatuses ?? [])];
+  if (pipelineStatuses.length > 0) {
+    // 达人库分区把 7 个阶段收成 5 组（跟进中 = contacted + communicating，
+    // 不合适 = unsuitable + declined），分组必须在服务端过滤，
+    // 否则「加载更多」会在整页里筛出寥寥几条，分页既不连续也对不上分区计数。
+    predicates.push(
+      `candidates.pipeline_status IN (${pipelineStatuses.map(() => '?').join(', ')})`,
+    );
+    parameters.push(...pipelineStatuses);
   }
   if (filters.ownerUserId) {
     predicates.push('COALESCE(outreach.owner_user_id, candidates.assignee_user_id) = ?');

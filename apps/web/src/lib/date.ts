@@ -1,3 +1,5 @@
+import type { CandidateSection } from '../constants';
+import { candidateSections } from '../constants';
 import type { CandidateSummary } from '../types';
 
 export function candidateDateRange(
@@ -24,15 +26,18 @@ export function candidateDateRange(
   return { from: `${from}T00:00:00+08:00`, to: `${to}T00:00:00+08:00` };
 }
 
+// 服务端已按分区的阶段集合过滤并分页，这里只是「加载更多」没有中断机制时的兜底：
+// 切换分区后仍可能有一次旧分区的响应回来，直接合并会把两个分区的达人混在一起。
 export function candidateMatchesLibraryView(
   candidate: CandidateSummary,
-  section: 'qualified' | 'needs_evidence',
-  preset: 'pending_review' | 'to_contact' | 'mine' | null,
+  section: CandidateSection,
+  mineOnly: boolean,
   currentUserId: string,
 ) {
-  if (candidate.hardFilterStatus !== (section === 'qualified' ? 'pass' : 'unknown')) return false;
-  if (preset === 'mine') return candidate.ownerUserId === currentUserId;
-  return preset ? candidate.pipelineStatus === preset : true;
+  if (mineOnly && candidate.ownerUserId !== currentUserId) return false;
+  const statuses: readonly string[] =
+    candidateSections.find((item) => item.value === section)?.statuses ?? [];
+  return statuses.includes(candidate.pipelineStatus);
 }
 
 export function groupCandidatesByDate(candidates: CandidateSummary[]) {

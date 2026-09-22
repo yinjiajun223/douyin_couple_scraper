@@ -1398,6 +1398,14 @@ textarea:focus {
   color: #9a6516;
   background: #fff5df;
 }
+.candidate-stage {
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--graphite);
+  background: #e8ecf3;
+  font-size: 10px;
+  white-space: nowrap;
+}
 .candidate-detail-shell {
   min-width: 0;
   border: 1px solid var(--line);

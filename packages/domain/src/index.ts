@@ -129,6 +129,11 @@ export type {
   HardFilterResult,
   HardRuleEvaluation,
 } from './screening/hard-filter.js';
+export { listRunObservedCreators } from './screening/run-observed-creators.js';
+export type {
+  ObservedCreatorRuleEvaluation,
+  ObservedCreatorVerdict,
+} from './screening/run-observed-creators.js';
 export {
   CollectorDeviceIdentityMismatchError,
   CollectorRunAccessDeniedError,
@@ -217,6 +222,7 @@ export {
   cleanupMediaObjects,
   DEFAULT_MEDIA_CLEANUP_BATCH_SIZE,
   DEFAULT_MEDIA_RETENTION_DAYS,
+  DEFAULT_ORPHAN_MEDIA_GRACE_DAYS,
 } from './media/media-cleanup.js';
 export type { MediaCleanupOptions, MediaCleanupSummary } from './media/media-cleanup.js';
 export { importLegacyExport, parseLegacyExport } from './legacy/legacy-import.js';

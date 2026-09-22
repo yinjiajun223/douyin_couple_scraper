@@ -38,6 +38,30 @@ export function formatEvidenceThreshold(evidence: Record<string, unknown>) {
   return '保留当时观察值与阈值';
 }
 
+// 作品规则的依据字段：命中的作品给出赞数与发布时间，缺失的据实说明缺什么，不折算成 0。
+export function formatPostEvidence(evidence: Record<string, unknown>) {
+  const matched = Array.isArray(evidence.matchedPosts) ? evidence.matchedPosts : [];
+  if (matched.length > 0) {
+    return matched
+      .map((post) => {
+        const row = post as Record<string, unknown>;
+        const likes =
+          typeof row.likeCount === 'number'
+            ? `${formatFollowerCount(row.likeCount)} 赞`
+            : '赞数未知';
+        const raw = typeof row.likeCountRaw === 'string' ? `（${row.likeCountRaw}）` : '';
+        const published =
+          typeof row.publishedAt === 'string' ? formatRunTime(row.publishedAt) : '发布时间未知';
+        return `命中 ${likes}${raw} · ${published}`;
+      })
+      .join('；');
+  }
+  const unknown = Array.isArray(evidence.unknownPosts) ? evidence.unknownPosts : [];
+  return unknown.length > 0
+    ? `${unknown.length} 条作品缺少赞数或发布时间，按未知处理`
+    : '窗口内没有可核验的作品';
+}
+
 export function runStatusLabel(status: RunSummary['status']) {
   return {
     ready: '待领取',

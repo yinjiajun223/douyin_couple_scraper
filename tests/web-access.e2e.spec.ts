@@ -5,6 +5,79 @@ type Role = 'admin' | 'operator' | 'readonly';
 
 const labels = { admin: '管理员', operator: '运营', readonly: '只读' } as const;
 const candidatesRoute = /\/candidates(?:\?.*)?$/;
+const observedCreatorsRoute = /\/runs\/[^/]+\/observed-creators$/u;
+const observedCreators = [
+  {
+    admitted: true,
+    candidateId: 'candidate-1',
+    creatorId: 'creator-1',
+    evaluations: [
+      {
+        evidence: { maximum: 5_000, minimum: 0, observedRawValue: '1200', observedValue: 1_200 },
+        outcome: 'pass',
+        ruleId: 'followers',
+        ruleType: 'follower-range',
+      },
+      {
+        evidence: {
+          matchedPosts: [
+            {
+              likeCount: 12_000,
+              likeCountRaw: '1.2万',
+              publishedAt: '2026-09-14T08:00:00.000Z',
+            },
+          ],
+          minimumLikes: 10_000,
+          unknownPosts: [],
+        },
+        outcome: 'pass',
+        ruleId: 'recent-viral-post',
+        ruleType: 'recent-post-likes',
+      },
+    ],
+    followerCount: 1_200,
+    followerCountRaw: '1200',
+    nickname: '已入库同学',
+    observationId: 'observation-1',
+    observedAt: '2026-09-15T08:00:00.000Z',
+    outcome: 'pass',
+    pipelineStatus: 'pending_review',
+    platformCreatorId: 'creator-1',
+    profileUrl: 'https://www.douyin.com/user/creator-1',
+  },
+  {
+    admitted: false,
+    candidateId: null,
+    creatorId: 'creator-2',
+    evaluations: [
+      {
+        evidence: { maximum: 5_000, minimum: 0, observedRawValue: null, reason: 'missing' },
+        outcome: 'unknown',
+        ruleId: 'followers',
+        ruleType: 'follower-range',
+      },
+      {
+        evidence: {
+          matchedPosts: [],
+          minimumLikes: 10_000,
+          unknownPosts: [{ likeCount: null, likeCountRaw: null, publishedAt: null }],
+        },
+        outcome: 'unknown',
+        ruleId: 'recent-viral-post',
+        ruleType: 'recent-post-likes',
+      },
+    ],
+    followerCount: null,
+    followerCountRaw: null,
+    nickname: '缺数据同学',
+    observationId: 'observation-2',
+    observedAt: '2026-09-15T08:05:00.000Z',
+    outcome: 'unknown',
+    pipelineStatus: null,
+    platformCreatorId: 'creator-2',
+    profileUrl: 'https://www.douyin.com/user/creator-2',
+  },
+];
 
 test('已保存的任务可以创建运行，并提示去本机人工开始', async ({ page }) => {
   await mockAuthenticatedWorkspace(page, 'operator');
@@ -67,6 +140,9 @@ async function mockAuthenticatedWorkspace(page: Page, role: Role) {
   });
   await page.route('**/runs', async (route) => {
     await route.fulfill({ contentType: 'application/json', json: { runs: [] } });
+  });
+  await page.route(observedCreatorsRoute, async (route) => {
+    await route.fulfill({ contentType: 'application/json', json: { creators: [] } });
   });
   await page.route(candidatesRoute, async (route) => {
     await route.fulfill({ contentType: 'application/json', json: { candidates: [] } });
@@ -230,64 +306,67 @@ test('运营首页计数可跳转到对应候选和运行过滤结果', async ({
   await expect(page.getByRole('button', { name: /待联系达人/ })).toBeVisible();
 });
 
-test('达人库区分符合条件与待补证据并隐藏硬筛失败', async ({ page }) => {
+test('达人库按跟进阶段分区，不再提供待补证据入口', async ({ page }) => {
   await mockAuthenticatedWorkspace(page, 'operator');
   await page.unroute(candidatesRoute);
   const candidateBase = {
     campaignName: '校园任务',
+    followerCount: 1_200,
     manualDecision: 'pending',
     observedAt: '2026-09-16T08:00:00.000Z',
     ownerUserId: null,
-    pipelineStatus: 'pending_review',
     tags: [],
   };
-  await page.route(candidatesRoute, async (route) =>
-    route.fulfill({
+  const library = [
+    { id: 'pending', nickname: '待复核同学', pipelineStatus: 'pending_review' },
+    { id: 'to-contact', nickname: '待联系同学', pipelineStatus: 'to_contact' },
+    { id: 'contacted', nickname: '已联系同学', pipelineStatus: 'contacted' },
+    { id: 'communicating', nickname: '沟通中同学', pipelineStatus: 'communicating' },
+    { id: 'partnered', nickname: '已合作同学', pipelineStatus: 'partnered' },
+    { id: 'unsuitable', nickname: '不符合同学', pipelineStatus: 'unsuitable' },
+    { id: 'declined', nickname: '不合作同学', pipelineStatus: 'declined' },
+  ].map((candidate) => ({
+    ...candidateBase,
+    profileUrl: `https://www.douyin.com/user/${candidate.id}`,
+    ...candidate,
+  }));
+  // 真实接口按 pipelineStatuses 在服务端过滤并分页，mock 照做：
+  // 分区若退化成「拉一整页再前端筛选」，下面的可见性断言会立刻失败。
+  await page.route(candidatesRoute, (route) => {
+    const statuses = (new URL(route.request().url()).searchParams.get('pipelineStatuses') ?? '')
+      .split(',')
+      .filter(Boolean);
+    return route.fulfill({
       json: {
-        candidates: [
-          {
-            ...candidateBase,
-            followerCount: 1_200,
-            hardFilterStatus: 'pass',
-            id: 'qualified-candidate',
-            nickname: '符合条件达人',
-            profileUrl: 'https://www.douyin.com/user/qualified',
-          },
-          {
-            ...candidateBase,
-            followerCount: 1_100,
-            hardFilterStatus: 'unknown',
-            id: 'needs-evidence-candidate',
-            nickname: '待补证据达人',
-            profileUrl: 'https://www.douyin.com/user/needs-evidence',
-          },
-          {
-            ...candidateBase,
-            followerCount: 50_000,
-            hardFilterStatus: 'fail',
-            id: 'failed-candidate',
-            nickname: '硬筛失败达人',
-            profileUrl: 'https://www.douyin.com/user/failed',
-          },
-        ],
+        candidates: library.filter((candidate) => statuses.includes(candidate.pipelineStatus)),
+        nextCursor: null,
       },
-    }),
-  );
+    });
+  });
 
   await page.goto('/');
   await page.getByRole('button', { name: '达人库', exact: true }).click();
-  await expect(page.getByRole('button', { name: '符合条件', exact: true })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: '全部', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  await expect(page.getByRole('button', { name: /符合条件达人/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /待补证据达人/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /硬筛失败达人/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '待补证据', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /待复核同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /沟通中同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /不合作同学/ })).toBeVisible();
+  await expect(page.locator('.library-count')).toHaveText('7 位达人');
 
-  await page.getByRole('button', { name: '待补证据' }).click();
-  await expect(page.getByRole('button', { name: /待补证据达人/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /符合条件达人/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /硬筛失败达人/ })).toHaveCount(0);
+  await page.getByRole('button', { name: '跟进中', exact: true }).click();
+  await expect(page.getByRole('button', { name: /已联系同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /沟通中同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /待复核同学/ })).toHaveCount(0);
+  await expect(page.locator('.library-count')).toHaveText('2 位跟进中');
+
+  await page.getByRole('button', { name: '不合适', exact: true }).click();
+  await expect(page.getByRole('button', { name: /不符合同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /不合作同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /已合作同学/ })).toHaveCount(0);
+  await expect(page.locator('.library-count')).toHaveText('2 位不合适');
 });
 
 test('达人库支持日期分组、管理员成员筛选和游标加载更多', async ({ page }) => {
@@ -329,7 +408,7 @@ test('达人库支持日期分组、管理员成员筛选和游标加载更多',
     const url = route.request().url();
     requestedUrls.push(url);
     const parsed = new URL(url);
-    if (!parsed.searchParams.has('hardFilterStatus')) {
+    if (!parsed.searchParams.has('pipelineStatuses')) {
       return route.fulfill({ json: { candidates: [], nextCursor: null } });
     }
     if (parsed.searchParams.has('cursor')) {
@@ -565,6 +644,13 @@ test('运行监控实时显示进度、停止原因、领取设备和错误', as
       },
     });
   });
+  await page.route(observedCreatorsRoute, async (route) => {
+    const runId = new URL(route.request().url()).pathname.split('/')[2];
+    await route.fulfill({
+      contentType: 'application/json',
+      json: { creators: runId === 'run-live' ? observedCreators : [] },
+    });
+  });
 
   await page.goto('/');
   await page.getByRole('button', { name: '运行监控', exact: true }).click();
@@ -573,6 +659,17 @@ test('运行监控实时显示进度、停止原因、领取设备和错误', as
   await expect(detail.getByText('运营电脑一号')).toBeVisible();
   await expect(detail.getByText('18', { exact: true })).toBeVisible();
   await expect(detail.getByText('采集中')).toBeVisible();
+
+  const observed = detail.locator('.evaluation-card');
+  await expect(observed.filter({ hasText: '已入库同学' })).toContainText('已入库 · 待复核');
+  await expect(observed.filter({ hasText: '已入库同学' })).toContainText('命中 12,000 赞（1.2万）');
+  // 缺失字段必须显示「未知」，不能被折算成 0 或留空。
+  const missing = observed.filter({ hasText: '缺数据同学' });
+  await expect(missing).toContainText('未入库 · 不进入复核队列');
+  await expect(missing).toContainText('粉丝 未知');
+  await expect(missing).toContainText('粉丝范围 · 未知 · 范围 0–5000');
+  await expect(missing).toContainText('1 条作品缺少赞数或发布时间，按未知处理');
+  await expect(missing.locator('.evidence-outcome')).toHaveText('未知');
 
   await page.getByRole('button', { name: /目标完成任务/ }).click();
   await expect(detail.getByText('目标候选数已达到')).toBeVisible();
@@ -583,6 +680,7 @@ test('运行监控实时显示进度、停止原因、领取设备和错误', as
   await expect(detail.getByText('异常', { exact: true })).toBeVisible();
   await expect(detail.getByText('页面结构无法识别，采集已安全暂停。')).toBeVisible();
   await expect(detail.getByText(/DOUYIN_STRUCTURE_UNKNOWN/)).toBeVisible();
+  await expect(detail.getByText('本次运行还没有核验任何达人主页。')).toBeVisible();
 });
 
 test('达人详情保留历史粉丝变化、任务来源和旧规则作品证据', async ({ page }) => {

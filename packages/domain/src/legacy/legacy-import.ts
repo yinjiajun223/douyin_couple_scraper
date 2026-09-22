@@ -156,7 +156,7 @@ export async function importLegacyExport(
      WHERE workspace_id = ? AND id = ?`,
     [
       JSON.stringify({
-        // 旧导出只有主页字段、没有作品数据，硬筛结论恒为「数据未知」，因此不会产生候选。
+        // 旧导出只有主页字段、没有作品数据，硬筛不可能通过，因此不会产生候选。
         candidatesFound: 0,
         creatorProfilesSeen: importedObservations,
         elapsedSeconds: 0,

@@ -74,13 +74,40 @@ describe('分层环境配置', () => {
     expect(config.MEDIA_RETENTION_DAYS).toBe(180);
     expect(config.MEDIA_CLEANUP_BATCH_SIZE).toBe(100);
     expect(config.MEDIA_CLEANUP_INTERVAL_MS).toBe(3_600_000);
+    // 孤儿回收删除的是不可恢复的 OSS 对象，缺省必须关闭。
+    expect(config.ORPHAN_MEDIA_CLEANUP_ENABLED).toBe(false);
+    expect(config.ORPHAN_MEDIA_GRACE_DAYS).toBe(7);
     expect(
       parseWorkerConfig({
         ...validInfrastructure,
         MEDIA_RETENTION_DAYS: '30',
         MEDIA_CLEANUP_BATCH_SIZE: '25',
+        ORPHAN_MEDIA_CLEANUP_ENABLED: 'true',
+        ORPHAN_MEDIA_GRACE_DAYS: '3',
       }),
-    ).toMatchObject({ MEDIA_RETENTION_DAYS: 30, MEDIA_CLEANUP_BATCH_SIZE: 25 });
+    ).toMatchObject({
+      MEDIA_RETENTION_DAYS: 30,
+      MEDIA_CLEANUP_BATCH_SIZE: 25,
+      ORPHAN_MEDIA_CLEANUP_ENABLED: true,
+      ORPHAN_MEDIA_GRACE_DAYS: 3,
+    });
+  });
+
+  it('孤儿回收开关只接受明确字面量，宽限期必须是 1 到 3650 天的整数', () => {
+    for (const enabled of ['yes', 'on', 'TRUE', '']) {
+      expect(() =>
+        parseWorkerConfig({ ...validInfrastructure, ORPHAN_MEDIA_CLEANUP_ENABLED: enabled }),
+      ).toThrow('ORPHAN_MEDIA_CLEANUP_ENABLED');
+    }
+    expect(
+      parseWorkerConfig({ ...validInfrastructure, ORPHAN_MEDIA_CLEANUP_ENABLED: '0' }),
+    ).toMatchObject({ ORPHAN_MEDIA_CLEANUP_ENABLED: false });
+
+    for (const graceDays of ['0', '-1', '7.5', 'abc', '3651']) {
+      expect(() =>
+        parseWorkerConfig({ ...validInfrastructure, ORPHAN_MEDIA_GRACE_DAYS: graceDays }),
+      ).toThrow('ORPHAN_MEDIA_GRACE_DAYS');
+    }
   });
 
   it('Collector 生产地址必须使用 HTTPS', () => {

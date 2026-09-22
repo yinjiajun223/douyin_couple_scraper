@@ -357,8 +357,8 @@ async function findOrCreateCandidate(
   const existing = rows[0];
   if (existing) {
     // hard_filter_status 表示「入库资格（创建时判定）」，不随后续运行改写：
-    // 达人库默认谓词是 hard_filter_status <> 'fail'，若把已晋级候选改写成
-    // fail，运营正在跟进的达人会从列表里静默消失。
+    // 达人库默认谓词是 hard_filter_status = 'pass'，若把已晋级候选改写成
+    // fail 或 unknown，运营正在跟进的达人会从列表里静默消失。
     await connection.execute(
       `UPDATE campaign_candidates
        SET latest_run_id = ?, latest_creator_observation_id = ?,

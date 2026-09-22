@@ -7,6 +7,7 @@ import { COLLECTOR_PROTOCOL_VERSION, createDefaultCampaignRuleSet } from '@douyi
 
 import { bootstrapFirstAdmin } from '../auth/bootstrap-admin.js';
 import type { DevicePrincipal } from '../auth/devices.js';
+import { acceptInvitation, createInvitation } from '../auth/invitations.js';
 import { createCampaign } from '../campaigns/campaign-service.js';
 import {
   claimCollectionRun,
@@ -16,7 +17,7 @@ import {
 import { createMysqlPool, runMigrations } from '../database/migrations.js';
 import { seedInitialWorkspace } from '../database/seed.js';
 import { ingestCollectorBatch } from '../ingestion/collector-ingestion.js';
-import { listCandidates } from './candidate-library.js';
+import { listCandidatePage, listCandidates } from './candidate-library.js';
 
 const databaseUrl = process.env.MYSQL_TEST_URL;
 const describeWithMysql = databaseUrl ? describe : describe.skip;
@@ -142,14 +143,7 @@ describeWithMysql('共享达人组合过滤', () => {
        SELECT ?, ?, ?, observations.creator_id, ?, observations.id, 'fail'
        FROM creator_observations observations
        WHERE observations.id = ?`,
-      [
-        randomUUID(),
-        workspaceId,
-        campaign.id,
-        run.id,
-        '28000000-0000-4000-8000-000000000003',
-        '28000000-0000-4000-8000-000000000003',
-      ],
+      [randomUUID(), workspaceId, campaign.id, run.id, '28000000-0000-4000-8000-000000000003'],
     );
 
     const [candidateRows] = await pool.query<RowDataPacket[]>(
@@ -265,5 +259,307 @@ describeWithMysql('共享达人组合过滤', () => {
         tags: ['情侣', '校园'],
       }),
     ]);
+  });
+
+  it('存量 fail 与 unknown 行都不进默认列表，显式过滤仍受同一记录级可见范围约束', async () => {
+    const campaign = await createCampaign(pool, {
+      workspaceId,
+      actorUserId,
+      name: '存量分区隔离任务',
+      recommendationProfileDescription: '校园情侣推荐流',
+      rules: createDefaultCampaignRuleSet(),
+    });
+    const run = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId: campaign.id,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    await startClaimedCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    const principal: DevicePrincipal = {
+      deviceId,
+      workspaceId,
+      ownerUserId: actorUserId,
+      name: '过滤测试设备',
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+    };
+    const fixtures = [
+      {
+        observationId: '31000000-0000-4000-8000-000000000001',
+        creatorId: 'legacy-fail',
+        nickname: '存量失败',
+        followerCount: 7_000,
+      },
+      {
+        observationId: '31000000-0000-4000-8000-000000000002',
+        creatorId: 'legacy-unknown',
+        nickname: '存量未知',
+        followerCount: null,
+      },
+      {
+        observationId: '31000000-0000-4000-8000-000000000003',
+        creatorId: 'fresh-pass',
+        nickname: '新入库达人',
+        followerCount: 1_200,
+      },
+    ] as const;
+    await ingestCollectorBatch(pool, principal, {
+      protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+      deviceId,
+      runId: run.id,
+      idempotencyKey: 'candidate-partition-batch-0001',
+      observations: fixtures.map((fixture) => ({
+        observationId: fixture.observationId,
+        platform: 'douyin',
+        platformCreatorId: fixture.creatorId,
+        profileUrl: `https://www.douyin.com/user/${fixture.creatorId}`,
+        nickname: fixture.nickname,
+        biography: '校园日常',
+        followerCount: fixture.followerCount,
+        followerCountRaw: fixture.followerCount === null ? null : String(fixture.followerCount),
+        observedAt: '2026-09-15T08:00:00.000Z',
+        parserConfidence: 0.98,
+        posts: [
+          {
+            platformPostId: `${fixture.creatorId}-post`,
+            postUrl: `https://www.douyin.com/video/${fixture.creatorId}-post`,
+            caption: '校园爆款',
+            likeCount: 12_000,
+            likeCountRaw: '1.2万',
+            publishedAt: '2026-09-10T08:00:00.000Z',
+            observedAt: '2026-09-15T08:00:00.000Z',
+            screenshotLocalId: null,
+          },
+        ],
+      })),
+    });
+
+    // 闸门上线后 fail 与 unknown 观测都不再产生候选行，存量行只能手工补，
+    // 用来验证旧数据既不进默认列表，也不因分区轴切到跟进阶段而串进任何分区。
+    for (const [observationId, hardFilterStatus] of [
+      ['31000000-0000-4000-8000-000000000001', 'fail'],
+      ['31000000-0000-4000-8000-000000000002', 'unknown'],
+    ] as const) {
+      await pool.execute(
+        `INSERT INTO campaign_candidates
+         (id, workspace_id, campaign_id, creator_id, latest_run_id,
+          latest_creator_observation_id, hard_filter_status)
+         SELECT ?, ?, ?, observations.creator_id, ?, observations.id, ?
+         FROM creator_observations observations
+         WHERE observations.id = ?`,
+        [randomUUID(), workspaceId, campaign.id, run.id, hardFilterStatus, observationId],
+      );
+    }
+
+    const creatorIds = async (filters: { hardFilterStatus?: 'pass' | 'fail' | 'unknown' }) =>
+      (
+        await listCandidates(pool, {
+          actorRole: 'admin',
+          actorUserId,
+          workspaceId,
+          campaignId: campaign.id,
+          ...filters,
+        })
+      )
+        .map((candidate) => candidate.platformCreatorId)
+        .sort();
+
+    // 默认列表与工作台三个计数器同口径：只放行取得入库资格的行。
+    expect(await creatorIds({})).toEqual(['fresh-pass']);
+    expect(await creatorIds({ hardFilterStatus: 'fail' })).toEqual(['legacy-fail']);
+    expect(await creatorIds({ hardFilterStatus: 'unknown' })).toEqual(['legacy-unknown']);
+    expect(await creatorIds({ hardFilterStatus: 'pass' })).toEqual(['fresh-pass']);
+
+    const invitation = await createInvitation(pool, {
+      workspaceId,
+      email: 'candidate-partition-operator@example.test',
+      role: 'operator',
+      invitedByUserId: actorUserId,
+      expiresInSeconds: 3600,
+    });
+    const operator = await acceptInvitation(pool, {
+      token: invitation.token,
+      displayName: '分区隔离运营',
+      password: 'StrongPartitionOperator2026',
+    });
+    const asOperator = {
+      actorRole: 'operator' as const,
+      actorUserId: operator.userId,
+      workspaceId,
+      campaignId: campaign.id,
+    };
+    // 设备属于管理员，该运营既没采集过也没被分配，显式 hardFilterStatus 不能绕过记录级可见范围。
+    expect(await listCandidates(pool, { ...asOperator, hardFilterStatus: 'fail' })).toEqual([]);
+
+    await pool.execute(
+      `UPDATE campaign_candidates SET assignee_user_id = ?
+       WHERE workspace_id = ? AND campaign_id = ? AND hard_filter_status = 'fail'`,
+      [operator.userId, workspaceId, campaign.id],
+    );
+    const operatorVisible = await listCandidates(pool, {
+      ...asOperator,
+      hardFilterStatus: 'fail',
+    });
+    expect(operatorVisible.map((candidate) => candidate.platformCreatorId)).toEqual([
+      'legacy-fail',
+    ]);
+    // 默认谓词与记录级可见范围取交集：即使已分配给该运营，存量 fail 行仍不进默认列表。
+    expect(await listCandidates(pool, asOperator)).toEqual([]);
+  });
+
+  it('阶段分区用多值过滤在服务端生效，且游标翻页不重复不遗漏', async () => {
+    const campaign = await createCampaign(pool, {
+      workspaceId,
+      actorUserId,
+      name: '阶段分区任务',
+      recommendationProfileDescription: '校园情侣推荐流',
+      rules: createDefaultCampaignRuleSet(),
+    });
+    const run = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId: campaign.id,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    await startClaimedCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    const principal: DevicePrincipal = {
+      deviceId,
+      workspaceId,
+      ownerUserId: actorUserId,
+      name: '过滤测试设备',
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+    };
+    const stages = [
+      'pending_review',
+      'to_contact',
+      'contacted',
+      'communicating',
+      'partnered',
+      'unsuitable',
+      'declined',
+    ] as const;
+    const fixtures = [
+      ...stages.map((stage, index) => ({
+        observationId: `32000000-0000-4000-8000-00000000000${index + 1}`,
+        creatorId: `stage-${stage.replaceAll('_', '-')}`,
+        followerCount: 1_200,
+      })),
+      // 第八位粉丝越界，闸门后不产生候选行，手工补一行存量 fail 用来验证默认谓词仍然叠加生效。
+      {
+        observationId: '32000000-0000-4000-8000-000000000008',
+        creatorId: 'stage-legacy-fail',
+        followerCount: 7_000,
+      },
+    ];
+    await ingestCollectorBatch(pool, principal, {
+      protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+      deviceId,
+      runId: run.id,
+      idempotencyKey: 'candidate-stage-batch-0001',
+      observations: fixtures.map((fixture) => ({
+        observationId: fixture.observationId,
+        platform: 'douyin',
+        platformCreatorId: fixture.creatorId,
+        profileUrl: `https://www.douyin.com/user/${fixture.creatorId}`,
+        nickname: fixture.creatorId,
+        biography: '校园日常',
+        followerCount: fixture.followerCount,
+        followerCountRaw: String(fixture.followerCount),
+        observedAt: '2026-09-15T08:00:00.000Z',
+        parserConfidence: 0.98,
+        posts: [
+          {
+            platformPostId: `${fixture.creatorId}-post`,
+            postUrl: `https://www.douyin.com/video/${fixture.creatorId}-post`,
+            caption: '校园爆款',
+            likeCount: 12_000,
+            likeCountRaw: '1.2万',
+            publishedAt: '2026-09-10T08:00:00.000Z',
+            observedAt: '2026-09-15T08:00:00.000Z',
+            screenshotLocalId: null,
+          },
+        ],
+      })),
+    });
+    for (const stage of stages) {
+      await pool.execute(
+        `UPDATE campaign_candidates candidates
+         JOIN creators ON creators.id = candidates.creator_id
+         SET candidates.pipeline_status = ?
+         WHERE candidates.campaign_id = ? AND creators.platform_creator_id = ?`,
+        [stage, campaign.id, `stage-${stage.replaceAll('_', '-')}`],
+      );
+    }
+    await pool.execute(
+      `INSERT INTO campaign_candidates
+       (id, workspace_id, campaign_id, creator_id, latest_run_id,
+        latest_creator_observation_id, hard_filter_status, pipeline_status)
+       SELECT ?, ?, ?, observations.creator_id, ?, observations.id, 'fail', 'pending_review'
+       FROM creator_observations observations
+       WHERE observations.id = ?`,
+      [randomUUID(), workspaceId, campaign.id, run.id, '32000000-0000-4000-8000-000000000008'],
+    );
+
+    const access = {
+      actorRole: 'admin' as const,
+      actorUserId,
+      workspaceId,
+      campaignId: campaign.id,
+    };
+    const creatorIds = async (pipelineStatuses: readonly string[]) =>
+      (await listCandidates(pool, { ...access, pipelineStatuses: [...pipelineStatuses] }))
+        .map((candidate) => candidate.platformCreatorId)
+        .sort();
+
+    // 五个分区各自覆盖对应的阶段集合，互不重叠。
+    expect(await creatorIds(['pending_review'])).toEqual(['stage-pending-review']);
+    expect(await creatorIds(['to_contact'])).toEqual(['stage-to-contact']);
+    expect(await creatorIds(['contacted', 'communicating'])).toEqual([
+      'stage-communicating',
+      'stage-contacted',
+    ]);
+    expect(await creatorIds(['partnered'])).toEqual(['stage-partnered']);
+    expect(await creatorIds(['unsuitable', 'declined'])).toEqual([
+      'stage-declined',
+      'stage-unsuitable',
+    ]);
+    // 单值过滤保持原样可用，多值与默认「入库资格」谓词叠加：存量 fail 行不进任何分区。
+    expect(await creatorIds(['pending_review', 'to_contact'])).toEqual([
+      'stage-pending-review',
+      'stage-to-contact',
+    ]);
+    expect(
+      (
+        await listCandidates(pool, {
+          ...access,
+          hardFilterStatus: 'fail',
+          pipelineStatuses: ['pending_review'],
+        })
+      ).map((candidate) => candidate.platformCreatorId),
+    ).toEqual(['stage-legacy-fail']);
+
+    // 全部观测的 observed_at 相同，first_visible_at 因此完全并列，翻页只能靠 candidates.id 兜底，
+    // 正好覆盖游标的并列分支。
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await listCandidatePage(pool, {
+        ...access,
+        limit: 2,
+        ...(cursor ? { cursor } : {}),
+      });
+      walked.push(...page.candidates.map((candidate) => candidate.platformCreatorId));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(walked).toHaveLength(new Set(walked).size);
+    expect([...walked].sort()).toEqual(
+      stages.map((stage) => `stage-${stage.replaceAll('_', '-')}`).sort(),
+    );
   });
 });

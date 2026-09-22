@@ -59,6 +59,7 @@ import {
   listCollectionRuns,
   listCampaignTemplates,
   listReadyCollectionRuns,
+  listRunObservedCreators,
   listCollectorRuns,
   listWorkspaceDevices,
   listWorkspaceMembers,
@@ -766,6 +767,7 @@ export function buildServer({
       hardFilterStatus?: string;
       manualDecision?: string;
       pipelineStatus?: string;
+      pipelineStatuses?: string;
       ownerUserId?: string;
       tags?: string;
       limit?: string;
@@ -791,6 +793,14 @@ export function buildServer({
         ...(query.hardFilterStatus ? { hardFilterStatus: query.hardFilterStatus } : {}),
         ...(query.manualDecision ? { manualDecision: query.manualDecision } : {}),
         ...(query.pipelineStatus ? { pipelineStatus: query.pipelineStatus } : {}),
+        ...(query.pipelineStatuses
+          ? {
+              pipelineStatuses: query.pipelineStatuses
+                .split(',')
+                .map((status) => status.trim())
+                .filter(Boolean),
+            }
+          : {}),
         ...(query.ownerUserId ? { ownerUserId: query.ownerUserId } : {}),
         ...(principal.role === 'admin' && query.memberUserId
           ? { memberUserId: query.memberUserId }
@@ -1022,6 +1032,24 @@ export function buildServer({
           Number.isFinite(requestedLimit) ? requestedLimit : 100,
         ),
       };
+    },
+  );
+
+  server.get<{ Params: { runId: string } }>(
+    '/runs/:runId/observed-creators',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(pool, request, reply, 'campaign:read');
+      if (!principal) return;
+      try {
+        return {
+          creators: await listRunObservedCreators(pool, {
+            runId: request.params.runId,
+            workspaceId: principal.workspaceId,
+          }),
+        };
+      } catch (error) {
+        return handleCollectionRunError(error, reply);
+      }
     },
   );
 

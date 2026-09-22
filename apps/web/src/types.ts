@@ -58,6 +58,27 @@ export interface RunSummary {
   updatedAt: string;
 }
 
+export interface ObservedCreatorVerdict {
+  admitted: boolean;
+  candidateId: string | null;
+  creatorId: string;
+  platformCreatorId: string;
+  nickname: string;
+  profileUrl: string;
+  followerCount: number | null;
+  followerCountRaw: string | null;
+  observationId: string;
+  observedAt: string;
+  outcome: 'pass' | 'fail' | 'unknown';
+  pipelineStatus: string | null;
+  evaluations: Array<{
+    ruleId: string;
+    ruleType: 'follower-range' | 'recent-post-likes';
+    outcome: 'pass' | 'fail' | 'unknown';
+    evidence: Record<string, unknown>;
+  }>;
+}
+
 export interface CandidateSummary {
   id: string;
   campaignName: string;
@@ -67,7 +88,6 @@ export interface CandidateSummary {
   followerCount: number | null;
   firstVisibleAt: string;
   observedAt: string;
-  hardFilterStatus: 'pass' | 'fail' | 'unknown';
   manualDecision: 'pending' | 'approved' | 'rejected';
   pipelineStatus: string;
   tags: string[];
@@ -86,7 +106,6 @@ export interface CandidateDetailData {
   candidate: {
     id: string;
     campaignName: string;
-    hardFilterStatus: 'pass' | 'fail' | 'unknown';
     pipelineStatus: string;
     version?: number;
   };
