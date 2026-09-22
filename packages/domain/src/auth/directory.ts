@@ -19,6 +19,7 @@ interface DeviceDirectoryRow extends RowDataPacket {
   owner_display_name: string;
   owner_user_id: string;
   parser_version: string | null;
+  revoked_at: Date | null;
   status: 'active' | 'revoked';
 }
 
@@ -54,7 +55,7 @@ export async function listWorkspaceDevices(
   const [rows] = await pool.query<DeviceDirectoryRow[]>(
     `SELECT devices.id, devices.name, devices.status, devices.owner_user_id,
             users.display_name AS owner_display_name, devices.collector_version,
-            devices.parser_version, devices.last_seen_at
+            devices.parser_version, devices.last_seen_at, devices.revoked_at
      FROM devices
      JOIN users ON users.id = devices.owner_user_id
      WHERE devices.workspace_id = ? ${ownerFilter}
@@ -70,5 +71,6 @@ export async function listWorkspaceDevices(
     collectorVersion: row.collector_version,
     parserVersion: row.parser_version,
     lastSeenAt: row.last_seen_at,
+    revokedAt: row.revoked_at,
   }));
 }
