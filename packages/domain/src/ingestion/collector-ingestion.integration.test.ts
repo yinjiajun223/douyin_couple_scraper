@@ -8,6 +8,7 @@ import type { DevicePrincipal } from '../auth/devices.js';
 import { archiveCampaign, createCampaign } from '../campaigns/campaign-service.js';
 import { getCandidateDetail } from '../candidates/candidate-library.js';
 import {
+  archiveCandidate,
   getCandidateWorkflow,
   submitManualReview,
   transitionCandidatePipeline,
@@ -788,6 +789,86 @@ describeWithMysql('Collector 规范化与跨来源去重', () => {
       source_count: 2,
       candidate_count: 0,
       evaluation_count: 0,
+    });
+  });
+
+  it('归档候选仍被后续采集更新，且不会自动取消归档', async () => {
+    const { campaignId, runId: runOne } = await startRun('归档跟踪任务');
+    const creatorKey = 'archived-track-creator';
+
+    await ingestOne(runOne, 'archived-track-batch-1', {
+      observationId: '39000000-0000-4000-8000-000000000001',
+      platformCreatorId: creatorKey,
+      followerCount: 1_200,
+      followerCountRaw: '1200',
+      likeCount: 12_000,
+      observedAt: '2026-09-15T08:00:00.000Z',
+    });
+    const [created] = await pool.query<RowDataPacket[]>(
+      `SELECT candidates.id FROM campaign_candidates candidates
+       JOIN creators ON creators.id = candidates.creator_id
+       WHERE candidates.campaign_id = ? AND creators.platform_creator_id = ?`,
+      [campaignId, creatorKey],
+    );
+    expect(created).toHaveLength(1);
+    const candidateId = created[0]!.id as string;
+    await archiveCandidate(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId,
+      expectedVersion: 1,
+      note: '与已合作达人重复',
+      workspaceId,
+    });
+    const [archived] = await pool.query<RowDataPacket[]>(
+      `SELECT archived_at FROM campaign_candidates WHERE id = ?`,
+      [candidateId],
+    );
+    const archivedAt = archived[0]!.archived_at as Date;
+    expect(archivedAt).toBeInstanceOf(Date);
+
+    const runTwo = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: runTwo.id, deviceId: deviceOneId });
+    await startClaimedCollectionRun(pool, {
+      workspaceId,
+      runId: runTwo.id,
+      deviceId: deviceOneId,
+    });
+    const second = await ingestOne(runTwo.id, 'archived-track-batch-2', {
+      observationId: '39000000-0000-4000-8000-000000000002',
+      platformCreatorId: creatorKey,
+      followerCount: 1_300,
+      followerCountRaw: '1300',
+      likeCount: 12_000,
+      observedAt: '2026-09-16T08:00:00.000Z',
+    });
+    expect(second.results).toEqual([
+      { observationId: '39000000-0000-4000-8000-000000000002', status: 'accepted' },
+    ]);
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT candidates.archived_at, candidates.hard_filter_status, candidates.latest_run_id,
+              candidates.latest_creator_observation_id, candidates.pipeline_status,
+              candidates.version,
+              (SELECT COUNT(*) FROM campaign_candidates
+                WHERE campaign_id = ? AND creator_id = candidates.creator_id) AS candidate_count
+       FROM campaign_candidates candidates
+       WHERE candidates.id = ?`,
+      [campaignId, candidateId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      archived_at: archivedAt,
+      candidate_count: 1,
+      hard_filter_status: 'pass',
+      latest_run_id: runTwo.id,
+      latest_creator_observation_id: '39000000-0000-4000-8000-000000000002',
+      pipeline_status: 'pending_review',
+      version: 3,
     });
   });
 });

@@ -18,6 +18,7 @@ import { createMysqlPool, runMigrations } from '../database/migrations.js';
 import { seedInitialWorkspace } from '../database/seed.js';
 import { ingestCollectorBatch } from '../ingestion/collector-ingestion.js';
 import { listCandidatePage, listCandidates } from './candidate-library.js';
+import { archiveCandidate } from './candidate-workflow.js';
 
 const databaseUrl = process.env.MYSQL_TEST_URL;
 const describeWithMysql = databaseUrl ? describe : describe.skip;
@@ -408,6 +409,123 @@ describeWithMysql('共享达人组合过滤', () => {
     ]);
     // 默认谓词与记录级可见范围取交集：即使已分配给该运营，存量 fail 行仍不进默认列表。
     expect(await listCandidates(pool, asOperator)).toEqual([]);
+  });
+
+  it('已归档候选离开默认列表，只进入受同一可见范围约束的已归档视图', async () => {
+    const campaign = await createCampaign(pool, {
+      workspaceId,
+      actorUserId,
+      name: '归档视图任务',
+      recommendationProfileDescription: '校园情侣推荐流',
+      rules: createDefaultCampaignRuleSet(),
+    });
+    const run = await createCollectionRun(pool, {
+      workspaceId,
+      actorUserId,
+      campaignId: campaign.id,
+    });
+    await claimCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    await startClaimedCollectionRun(pool, { workspaceId, runId: run.id, deviceId });
+    const principal: DevicePrincipal = {
+      deviceId,
+      workspaceId,
+      ownerUserId: actorUserId,
+      name: '归档测试设备',
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+    };
+    await ingestCollectorBatch(pool, principal, {
+      protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+      collectorVersion: '1.0.0',
+      parserVersion: '1.0.0',
+      deviceId,
+      runId: run.id,
+      idempotencyKey: 'candidate-archive-view-0001',
+      observations: [
+        {
+          observationId: '37000000-0000-4000-8000-000000000001',
+          platform: 'douyin',
+          platformCreatorId: 'archive-view-pass',
+          profileUrl: 'https://www.douyin.com/user/archive-view-pass',
+          nickname: '归档视图达人',
+          biography: '校园日常',
+          followerCount: 1_200,
+          followerCountRaw: '1200',
+          observedAt: '2026-09-15T08:00:00.000Z',
+          parserConfidence: 0.98,
+          posts: [
+            {
+              platformPostId: 'archive-view-post',
+              postUrl: 'https://www.douyin.com/video/archive-view-post',
+              caption: '校园爆款',
+              likeCount: 12_000,
+              likeCountRaw: '1.2万',
+              publishedAt: '2026-09-10T08:00:00.000Z',
+              observedAt: '2026-09-15T08:00:00.000Z',
+              screenshotLocalId: null,
+            },
+          ],
+        },
+      ],
+    });
+    const [candidateRows] = await pool.query<RowDataPacket[]>(
+      'SELECT id FROM campaign_candidates WHERE workspace_id = ? AND campaign_id = ?',
+      [workspaceId, campaign.id],
+    );
+    const archivedCandidateId = candidateRows[0]?.id as string;
+    await archiveCandidate(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: archivedCandidateId,
+      expectedVersion: 1,
+      workspaceId,
+    });
+
+    const baseFilters = { actorUserId, campaignId: campaign.id, workspaceId };
+    expect(await listCandidates(pool, { ...baseFilters, actorRole: 'admin' })).toEqual([]);
+    const archivedPage = await listCandidatePage(pool, {
+      ...baseFilters,
+      actorRole: 'admin',
+      archiveView: 'archived',
+    });
+    expect(archivedPage.candidates.map((candidate) => candidate.platformCreatorId)).toEqual([
+      'archive-view-pass',
+    ]);
+    expect(archivedPage.candidates[0]?.archivedAt).toBeInstanceOf(Date);
+
+    const invitation = await createInvitation(pool, {
+      workspaceId,
+      email: 'candidate-archive-operator@example.test',
+      role: 'operator',
+      invitedByUserId: actorUserId,
+      expiresInSeconds: 3600,
+    });
+    const operator = await acceptInvitation(pool, {
+      token: invitation.token,
+      displayName: '归档视图运营',
+      password: 'StrongArchiveOperator2026',
+    });
+    // 设备属于管理员：已归档视图同样不能绕过记录级可见范围。
+    expect(
+      await listCandidates(pool, {
+        ...baseFilters,
+        actorRole: 'operator',
+        actorUserId: operator.userId,
+        archiveView: 'archived',
+      }),
+    ).toEqual([]);
+    await pool.execute('UPDATE campaign_candidates SET assignee_user_id = ? WHERE id = ?', [
+      operator.userId,
+      archivedCandidateId,
+    ]);
+    expect(
+      await listCandidates(pool, {
+        ...baseFilters,
+        actorRole: 'operator',
+        actorUserId: operator.userId,
+        archiveView: 'archived',
+      }),
+    ).toHaveLength(1);
   });
 
   it('阶段分区用多值过滤在服务端生效，且游标翻页不重复不遗漏', async () => {

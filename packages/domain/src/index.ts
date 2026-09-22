@@ -164,6 +164,7 @@ export type {
 } from './candidates/candidate-library.js';
 export {
   appendCandidateNote,
+  archiveCandidate,
   canTransitionPipeline,
   CandidateVersionConflictError,
   CandidateWorkflowNotFoundError,
@@ -173,6 +174,7 @@ export {
   PIPELINE_STATUSES,
   submitManualReview,
   transitionCandidatePipeline,
+  unarchiveCandidate,
   updateCandidateOutreach,
 } from './candidates/candidate-workflow.js';
 export type { ManualDecision, PipelineStatus } from './candidates/candidate-workflow.js';

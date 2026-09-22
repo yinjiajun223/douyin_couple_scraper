@@ -8,7 +8,10 @@ export type AuditAction =
   | 'account.bootstrap_admin'
   | 'account.invitation_created'
   | 'account.invitation_accepted'
+  | 'account.invitation_revoked'
   | 'account.disabled'
+  | 'account.enabled'
+  | 'account.role_changed'
   | 'campaign.rules_updated'
   | 'campaign.run_created'
   | 'campaign.run_status_changed'
@@ -17,6 +20,9 @@ export type AuditAction =
   | 'device.token_rotated'
   | 'device.revoked'
   | 'candidate.reviewed'
+  | 'candidate.archived'
+  | 'candidate.unarchived'
+  | 'candidate.tags_changed'
   | 'outreach.status_changed'
   | 'export.created';
 

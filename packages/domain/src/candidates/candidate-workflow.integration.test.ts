@@ -11,12 +11,15 @@ import { seedInitialWorkspace } from '../database/seed.js';
 import { getOperationsDashboard } from '../dashboard/operations-dashboard.js';
 import {
   appendCandidateNote,
+  archiveCandidate,
   CandidateVersionConflictError,
+  CandidateWorkflowNotFoundError,
   getCandidateWorkflow,
   InvalidPipelineTransitionError,
   OutreachVersionConflictError,
   submitManualReview,
   transitionCandidatePipeline,
+  unarchiveCandidate,
   updateCandidateOutreach,
 } from './candidate-workflow.js';
 import { exportCandidateCsv } from './candidate-export.js';
@@ -476,5 +479,82 @@ describeWithMysql('manual review and outreach workflow', () => {
     expect(workflow.candidateVersion).toBe(1);
     expect(workflow.reviews).toEqual([]);
     expect(workflow.events).toEqual([]);
+  });
+
+  it('归档与恢复在同一事务内写事件和审计，并各递增一次版本', async () => {
+    const target = await createPendingCandidate('workflow-archive');
+    const archived = await archiveCandidate(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      expectedVersion: 1,
+      note: '重复账号',
+      workspaceId,
+    });
+    expect(archived).toEqual({ id: target, version: 2 });
+
+    const [archivedRows] = await pool.query<RowDataPacket[]>(
+      'SELECT archived_at FROM campaign_candidates WHERE id = ?',
+      [target],
+    );
+    expect(archivedRows[0]?.archived_at).toBeInstanceOf(Date);
+
+    const restored = await unarchiveCandidate(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: target,
+      expectedVersion: 2,
+      workspaceId,
+    });
+    expect(restored).toEqual({ id: target, version: 3 });
+    const [restoredRows] = await pool.query<RowDataPacket[]>(
+      'SELECT archived_at FROM campaign_candidates WHERE id = ?',
+      [target],
+    );
+    expect(restoredRows[0]?.archived_at).toBeNull();
+
+    const workflow = await getCandidateWorkflow(pool, adminAccess(), target);
+    expect(new Set(workflow.events.map((event) => event.eventType))).toEqual(
+      new Set(['archived', 'unarchived']),
+    );
+    const [auditRows] = await pool.query<RowDataPacket[]>(
+      `SELECT action FROM audit_events
+       WHERE workspace_id = ? AND subject_id = ? ORDER BY created_at, id`,
+      [workspaceId, target],
+    );
+    expect(auditRows.map((row) => row.action)).toEqual([
+      'candidate.archived',
+      'candidate.unarchived',
+    ]);
+  });
+
+  it('归档遇到版本冲突或越权目标时不做任何修改', async () => {
+    const target = await createPendingCandidate('workflow-archive-conflict');
+    await expect(
+      archiveCandidate(pool, {
+        actorRole: 'admin',
+        actorUserId,
+        candidateId: target,
+        expectedVersion: 9,
+        workspaceId,
+      }),
+    ).rejects.toBeInstanceOf(CandidateVersionConflictError);
+
+    await expect(
+      archiveCandidate(pool, {
+        actorRole: 'admin',
+        actorUserId,
+        candidateId: randomUUID(),
+        expectedVersion: 1,
+        workspaceId,
+      }),
+    ).rejects.toBeInstanceOf(CandidateWorkflowNotFoundError);
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      'SELECT archived_at, version FROM campaign_candidates WHERE id = ?',
+      [target],
+    );
+    expect(rows[0]?.archived_at).toBeNull();
+    expect(rows[0]?.version).toBe(1);
   });
 });

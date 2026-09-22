@@ -8,6 +8,7 @@ import { COLLECTOR_PROTOCOL_VERSION, createDefaultCampaignRuleSet } from '@douyi
 import { bootstrapFirstAdmin } from '../auth/bootstrap-admin.js';
 import type { DevicePrincipal } from '../auth/devices.js';
 import { createCampaign } from '../campaigns/campaign-service.js';
+import { archiveCandidate } from '../candidates/candidate-workflow.js';
 import {
   claimCollectionRun,
   createCollectionRun,
@@ -43,6 +44,7 @@ describeWithMysql('孤儿证据回收', () => {
     batchOldest: '33000000-0000-4000-8000-000000000008',
     batchMiddle: '33000000-0000-4000-8000-000000000009',
     batchYoungest: '33000000-0000-4000-8000-000000000010',
+    archivedCandidate: '33000000-0000-4000-8000-000000000011',
   } as const;
   const observedAt = new Date().toISOString();
   const publishedAt = new Date(Date.now() - 86_400_000).toISOString();
@@ -317,6 +319,47 @@ describeWithMysql('孤儿证据回收', () => {
       workspaceId,
     });
 
+    expect(summary.deletedOrphans).toBe(0);
+    expect(deleteCount(objectKey)).toBe(0);
+    expect(await readMedia(objectKey)).toMatchObject({ status: 'confirmed' });
+  });
+
+  it('已归档候选的确认素材不被孤儿回收误删', async () => {
+    await seedCreator({
+      creatorId: 'cleanup-archived-candidate',
+      followerCount: 1_300,
+      observationId: observationIds.archivedCandidate,
+      runId: activeRunId,
+    });
+    const [candidates] = await pool.query<RowDataPacket[]>(
+      `SELECT candidates.id, candidates.version FROM campaign_candidates candidates
+       WHERE candidates.workspace_id = ? AND candidates.creator_id IN (
+         SELECT id FROM creators WHERE workspace_id = ? AND platform_creator_id = ?
+       )`,
+      [workspaceId, workspaceId, 'cleanup-archived-candidate'],
+    );
+    expect(candidates).toHaveLength(1);
+    await archiveCandidate(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: candidates[0]!.id as string,
+      expectedVersion: Number(candidates[0]!.version),
+      note: '与已合作达人重复',
+      workspaceId,
+    });
+    const objectKey = 'evidence/cleanup/archived-candidate.webp';
+    await insertConfirmedMedia(observationIds.archivedCandidate, objectKey, 400);
+
+    const summary = await cleanupMediaObjects(pool, storage, {
+      batchSize: 20,
+      orphanCleanupEnabled: true,
+      orphanGraceDays: 7,
+      retentionDays: 3_650,
+      workspaceId,
+    });
+
+    // 归档只写 archived_at，候选行仍然存在；孤儿判据是「没有候选行」，
+    // 所以已归档候选的证据必须原样留下，等人工恢复后继续可用。
     expect(summary.deletedOrphans).toBe(0);
     expect(deleteCount(objectKey)).toBe(0);
     expect(await readMedia(objectKey)).toMatchObject({ status: 'confirmed' });

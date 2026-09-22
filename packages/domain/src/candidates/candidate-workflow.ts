@@ -89,6 +89,17 @@ const manualReviewSchema = z
   })
   .strict();
 
+const archiveSchema = z
+  .object({
+    actorRole: z.enum(['admin', 'operator', 'readonly']),
+    actorUserId: z.uuid(),
+    candidateId: z.uuid(),
+    expectedVersion: z.number().int().positive(),
+    note: z.string().trim().min(1).max(500).nullable().optional(),
+    workspaceId: z.uuid(),
+  })
+  .strict();
+
 const outreachSchema = z
   .object({
     actorRole: z.enum(['admin', 'operator', 'readonly']),
@@ -207,6 +218,45 @@ export async function submitManualReview(pool: Pool, rawInput: unknown) {
       pipelineStatus: advancedStatus ?? candidate.pipeline_status,
       version: candidate.version + 1,
     };
+  });
+}
+
+export async function archiveCandidate(pool: Pool, rawInput: unknown) {
+  return setCandidateArchived(pool, rawInput, true);
+}
+
+export async function unarchiveCandidate(pool: Pool, rawInput: unknown) {
+  return setCandidateArchived(pool, rawInput, false);
+}
+
+async function setCandidateArchived(pool: Pool, rawInput: unknown, archived: boolean) {
+  const input = archiveSchema.parse(rawInput);
+  return withTransaction(pool, async (connection) => {
+    const candidate = await lockCandidate(connection, input, input.candidateId);
+    assertCandidateVersion(candidate, input.expectedVersion);
+    await connection.execute(
+      `UPDATE campaign_candidates
+       SET archived_at = ?, version = version + 1
+       WHERE workspace_id = ? AND id = ?`,
+      [archived ? new Date() : null, input.workspaceId, input.candidateId],
+    );
+    await appendCandidateEvent(connection, {
+      actorUserId: input.actorUserId,
+      candidateId: input.candidateId,
+      changedFields: { archived },
+      eventType: archived ? 'archived' : 'unarchived',
+      ...(input.note ? { note: input.note } : {}),
+      workspaceId: input.workspaceId,
+    });
+    await writeAuditEvent(connection, {
+      action: archived ? 'candidate.archived' : 'candidate.unarchived',
+      actorUserId: input.actorUserId,
+      subjectId: input.candidateId,
+      subjectType: 'candidate',
+      summary: { archived },
+      workspaceId: input.workspaceId,
+    });
+    return { id: input.candidateId, version: candidate.version + 1 };
   });
 }
 

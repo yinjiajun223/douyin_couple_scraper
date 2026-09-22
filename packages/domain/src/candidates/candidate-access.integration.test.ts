@@ -15,7 +15,12 @@ import {
   listCandidatePage,
   listCandidates,
 } from './candidate-library.js';
-import { appendCandidateNote, CandidateWorkflowNotFoundError } from './candidate-workflow.js';
+import {
+  appendCandidateNote,
+  archiveCandidate,
+  CandidateWorkflowNotFoundError,
+  unarchiveCandidate,
+} from './candidate-workflow.js';
 
 const databaseUrl = process.env.MYSQL_TEST_URL;
 const describeWithMysql = databaseUrl ? describe : describe.skip;
@@ -328,5 +333,60 @@ describeWithMysql('达人库成员数据范围', () => {
     await expect(issueMediaAccessUrl(pool, storage, accessA(), mediaB)).rejects.toBeInstanceOf(
       MediaObjectNotFoundError,
     );
+  });
+
+  it('归档候选后素材签名访问沿用同一成员范围', async () => {
+    const storage: ObjectStorageClient = {
+      createSignedGetUrl: async ({ objectKey }) => `https://oss.example/${objectKey}`,
+      createSignedPutUrl: async () => '',
+      deleteObject: async () => undefined,
+      headObject: async () => ({
+        byteSize: 100,
+        checksumSha256: 'a'.repeat(64),
+        contentType: 'image/webp',
+        etag: 'etag',
+      }),
+    };
+    const versions: Record<string, number> = {};
+    for (const candidateId of [candidateA, candidateB]) {
+      const detail = await getCandidateDetail(pool, adminAccess(), candidateId);
+      versions[candidateId] = detail.candidate.version;
+      await archiveCandidate(pool, {
+        actorRole: 'admin',
+        actorUserId: adminUserId,
+        candidateId,
+        expectedVersion: versions[candidateId],
+        note: '重复达人',
+        workspaceId,
+      });
+    }
+
+    // 归档只影响列表分区，不改变记录级可见范围：看得见的人仍能取到签名地址，
+    // 看不见的人仍然拿到与「不存在」一致的结果。
+    await expect(issueMediaAccessUrl(pool, storage, accessA(), mediaA)).resolves.toMatchObject({
+      id: mediaA,
+    });
+    await expect(issueMediaAccessUrl(pool, storage, accessA(), mediaB)).rejects.toBeInstanceOf(
+      MediaObjectNotFoundError,
+    );
+    await expect(issueMediaAccessUrl(pool, storage, accessB(), mediaA)).rejects.toBeInstanceOf(
+      MediaObjectNotFoundError,
+    );
+    await expect(issueMediaAccessUrl(pool, storage, accessB(), mediaB)).resolves.toMatchObject({
+      id: mediaB,
+    });
+
+    for (const candidateId of [candidateA, candidateB]) {
+      await unarchiveCandidate(pool, {
+        actorRole: 'admin',
+        actorUserId: adminUserId,
+        candidateId,
+        expectedVersion: versions[candidateId]! + 1,
+        workspaceId,
+      });
+    }
+    expect(
+      (await getCandidateDetail(pool, adminAccess(), candidateA)).candidate.archivedAt,
+    ).toBeNull();
   });
 });

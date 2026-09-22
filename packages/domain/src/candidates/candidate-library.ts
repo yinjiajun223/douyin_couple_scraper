@@ -29,6 +29,7 @@ const candidateFilterSchema = z
     workspaceId: z.uuid(),
     memberUserId: z.uuid().optional(),
     campaignId: z.uuid().optional(),
+    archiveView: z.enum(['active', 'archived']).default('active'),
     cursor: z.string().trim().min(1).optional(),
     discoveredFrom: z.coerce.date().optional(),
     discoveredTo: z.coerce.date().optional(),
@@ -54,6 +55,7 @@ const candidateFilterSchema = z
   );
 
 interface CandidateRow extends RowDataPacket {
+  archived_at: Date | null;
   assignee_user_id: string | null;
   biography: string | null;
   campaign_id: string;
@@ -87,6 +89,7 @@ interface CandidateTagRow extends RowDataPacket {
 }
 
 interface CandidateDetailRow extends RowDataPacket {
+  archived_at: Date | null;
   assignee_user_id: string | null;
   campaign_id: string;
   campaign_name: string;
@@ -165,6 +168,7 @@ export interface CandidateListItem {
   followerCount: number | null;
   firstVisibleAt: Date;
   observedAt: Date;
+  archivedAt: Date | null;
   latestRunId: string;
   hardFilterStatus: 'pass' | 'fail' | 'unknown';
   manualDecision: 'pending' | 'approved' | 'rejected';
@@ -190,6 +194,7 @@ export interface CandidateDetail {
     hardFilterStatus: 'pass' | 'fail' | 'unknown';
     pipelineStatus: CandidateRow['pipeline_status'];
     assigneeUserId: string | null;
+    archivedAt: Date | null;
     version: number;
   };
   observations: Array<{
@@ -257,6 +262,13 @@ export async function listCandidatePage(pool: Pool, rawFilters: unknown): Promis
   const firstVisibleAt = firstVisibleAtExpression('candidates', scope.targetUserId);
   const visibleObservationId = visibleObservationIdExpression('candidates', scope.targetUserId);
   const predicates = ['candidates.workspace_id = ?', visibility.sql];
+  // 与 operations-dashboard.ts:37,42,48 的既有过滤同口径：默认列表不含已归档候选；
+  // 「已归档」视图复用同一查询，只把这一条谓词反过来。
+  predicates.push(
+    filters.archiveView === 'archived'
+      ? 'candidates.archived_at IS NOT NULL'
+      : 'candidates.archived_at IS NULL',
+  );
   const parameters: Array<string | number | Date> = [
     ...firstVisibleAt.parameters,
     ...visibleObservationId.parameters,
@@ -356,7 +368,7 @@ export async function listCandidatePage(pool: Pool, rawFilters: unknown): Promis
             candidates.creator_id, creators.platform_creator_id, observations.nickname,
             observations.biography, observations.profile_url, observations.follower_count,
             observations.observed_at, ${firstVisibleAt.sql} AS first_visible_at,
-            candidates.latest_run_id,
+            candidates.archived_at, candidates.latest_run_id,
             candidates.hard_filter_status, COALESCE(manual.decision, 'pending') AS manual_decision,
             candidates.pipeline_status, outreach.owner_user_id, candidates.assignee_user_id,
             candidates.version
@@ -407,6 +419,7 @@ export async function listCandidatePage(pool: Pool, rawFilters: unknown): Promis
     followerCount: row.follower_count === null ? null : Number(row.follower_count),
     firstVisibleAt: new Date(row.first_visible_at),
     observedAt: row.observed_at,
+    archivedAt: row.archived_at,
     latestRunId: row.latest_run_id,
     hardFilterStatus: row.hard_filter_status,
     manualDecision: row.manual_decision,
@@ -444,7 +457,7 @@ export async function getCandidateDetail(
             candidates.creator_id, creators.platform_creator_id,
             candidates.hard_filter_status, candidates.pipeline_status,
             candidates.assignee_user_id, outreach.owner_user_id,
-            candidates.latest_creator_observation_id, candidates.version
+            candidates.archived_at, candidates.latest_creator_observation_id, candidates.version
      FROM campaign_candidates candidates
      JOIN campaigns ON campaigns.id = candidates.campaign_id
      JOIN creators ON creators.id = candidates.creator_id
@@ -575,6 +588,7 @@ export async function getCandidateDetail(
       hardFilterStatus: candidate.hard_filter_status,
       pipelineStatus: candidate.pipeline_status,
       assigneeUserId: candidate.assignee_user_id,
+      archivedAt: candidate.archived_at,
       version: candidate.version,
     },
     observations: observations.map((observation) => ({
