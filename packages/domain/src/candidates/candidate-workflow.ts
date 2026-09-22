@@ -87,11 +87,7 @@ const manualReviewSchema = z
     reason: z.string().trim().min(1).max(2_000).nullable().optional(),
     workspaceId: z.uuid(),
   })
-  .strict()
-  .refine((input) => input.decision !== 'rejected' || Boolean(input.reason), {
-    message: '标记不符合时必须填写理由',
-    path: ['reason'],
-  });
+  .strict();
 
 const outreachSchema = z
   .object({
