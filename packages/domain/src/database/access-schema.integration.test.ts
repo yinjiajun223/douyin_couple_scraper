@@ -74,6 +74,21 @@ describeWithMysql('账户与权限数据模型', () => {
     ).rejects.toMatchObject({ code: 'ER_DUP_ENTRY' });
   });
 
+  it('邀请撤销列可空且迁移可幂等重跑', async () => {
+    const [columns] = await pool.query<RowDataPacket[]>(
+      `SELECT is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = 'invitations'
+         AND column_name = 'revoked_at'`,
+    );
+    expect(columns).toHaveLength(1);
+    expect(columns[0]!.IS_NULLABLE ?? columns[0]!.is_nullable).toBe('YES');
+
+    const rerun = await runMigrations(pool);
+    expect(rerun.applied).toEqual([]);
+  });
+
   it('角色约束拒绝未知角色', async () => {
     await expect(
       pool.execute('INSERT INTO memberships (workspace_id, user_id, role) VALUES (?, ?, ?)', [
