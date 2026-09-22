@@ -1,16 +1,16 @@
 ## 1. 数据库迁移
 
-- [ ] 1.1 新增一个向前的 expand 迁移，给 `invitations` 增加可空的撤销时间列，并在 `packages/domain/src/database/` 的迁移清单中按既有顺序登记。不修改任何已执行过的迁移文件。验证：`npm run db:migrate` 在本地 MySQL 上成功，重复执行不报错，`SHOW CREATE TABLE invitations` 含新列且原有列与约束未变。
-- [ ] 1.2 在 `packages/domain/src/database/access-schema.integration.test.ts` 补该列的 schema 断言，并确认迁移可幂等重跑。验证：`npm run test:mysql` 通过。
-- [ ] 1.3 确认 `audit_events.action` 与 `candidate_events.event_type` 均无 CHECK 约束，因此新增取值不需要 DDL。验证：`grep -n "chk_audit\|chk_candidate_events" packages/domain/migrations/*.sql` 无命中，结论记录在实施备注中。
+- [x] 1.1 新增一个向前的 expand 迁移，给 `invitations` 增加可空的撤销时间列，并在 `packages/domain/src/database/` 的迁移清单中按既有顺序登记。不修改任何已执行过的迁移文件。验证：`npm run db:migrate` 在本地 MySQL 上成功，重复执行不报错，`SHOW CREATE TABLE invitations` 含新列且原有列与约束未变。
+- [x] 1.2 在 `packages/domain/src/database/access-schema.integration.test.ts` 补该列的 schema 断言，并确认迁移可幂等重跑。验证：`npm run test:mysql` 通过。
+- [x] 1.3 确认 `audit_events.action` 与 `candidate_events.event_type` 均无 CHECK 约束，因此新增取值不需要 DDL。验证：`grep -n "chk_audit\|chk_candidate_events" packages/domain/migrations/*.sql` 无命中（退出码 1），结论记录在实施备注中。实施备注：迁移为 `0015_invitation_revocation.sql`，仅 `ADD COLUMN revoked_at TIMESTAMP(3) NULL`；迁移清单是目录扫描（`migrations.ts:58-75`），文件名即登记。
 
 ## 2. 归档领域能力（domain）
 
-- [ ] 2.1 在 `packages/domain/src/candidates/candidate-library.ts` 的默认查询加上 `candidates.archived_at IS NULL`，并在该处注明这是与 `operations-dashboard.ts:37,42,48` 对齐的既有过滤。此改动在当前生产数据下不改变任何结果（该列从未被写入）。验证：`candidate-library.integration.test.ts` 全绿，`npm run test:mysql` 通过。
-- [ ] 2.2 在 `packages/domain/src/candidates/candidate-library.ts` 新增「已归档」视图查询，复用 `resolveCandidateScope`（`candidate-access.ts:23`）与 `candidateVisibilityPredicate` 施加同一记录级可见范围，并复用既有日期分组与服务端分页。验证：集成测试断言运营人员只能看到自己可见范围内的已归档候选，越权返回与不存在一致。
-- [ ] 2.3 在 `packages/domain/src/candidates/candidate-workflow.ts` 新增 `archiveCandidate` / `unarchiveCandidate`：行级访问校验 → `assertCandidateVersion`（:490-494）→ 写入或清除 `archived_at` → `appendCandidateEvent('archived' | 'unarchived')`（备注可空）→ 写审计 → `version` 递增一次，全部在同一事务内。验证：集成测试覆盖归档、恢复、版本冲突、越权四类，`npm run test:mysql` 通过。
-- [ ] 2.4 在 `candidate-workflow.integration.test.ts` 断言归档**不阻断**后续采集更新：归档行在新一轮入库中 `latest_creator_observation_id` 与 `latest_run_id` 被更新、`archived_at` 保持不变（不自动取消归档）。验证：`npm run test:mysql` 通过。
-- [ ] 2.5 断言归档候选的私有素材既不被 `tighten-review-funnel` 的孤儿回收路径误删（候选行仍存在），也不因归档而绕过素材签名访问的记录级校验。验证：`npm run test:mysql` 中媒体清理与素材访问相关集成测试均含该用例并通过。
+- [x] 2.1 在 `packages/domain/src/candidates/candidate-library.ts` 的默认查询加上 `candidates.archived_at IS NULL`，并在该处注明这是与 `operations-dashboard.ts:37,42,48` 对齐的既有过滤。此改动在当前生产数据下不改变任何结果（该列从未被写入）。验证：`candidate-library.integration.test.ts` 全绿，`npm run test:mysql` 通过。
+- [x] 2.2 在 `packages/domain/src/candidates/candidate-library.ts` 新增「已归档」视图查询，复用 `resolveCandidateScope`（`candidate-access.ts:23`）与 `candidateVisibilityPredicate` 施加同一记录级可见范围，并复用既有日期分组与服务端分页。验证：集成测试断言运营人员只能看到自己可见范围内的已归档候选，越权返回与不存在一致。
+- [x] 2.3 在 `packages/domain/src/candidates/candidate-workflow.ts` 新增 `archiveCandidate` / `unarchiveCandidate`：行级访问校验 → `assertCandidateVersion`（:490-494）→ 写入或清除 `archived_at` → `appendCandidateEvent('archived' | 'unarchived')`（备注可空）→ 写审计 → `version` 递增一次，全部在同一事务内。验证：集成测试覆盖归档、恢复、版本冲突、越权四类，`npm run test:mysql` 通过。
+- [x] 2.4 在 `candidate-workflow.integration.test.ts` 断言归档**不阻断**后续采集更新：归档行在新一轮入库中 `latest_creator_observation_id` 与 `latest_run_id` 被更新、`archived_at` 保持不变（不自动取消归档）。验证：`npm run test:mysql` 通过。
+- [x] 2.5 断言归档候选的私有素材既不被 `tighten-review-funnel` 的孤儿回收路径误删（候选行仍存在），也不因归档而绕过素材签名访问的记录级校验。验证：`npm run test:mysql` 中媒体清理与素材访问相关集成测试均含该用例并通过。实施备注：2.1/2.2 合并为 `listCandidatePage` 的 `archiveView` 谓词翻转（默认 `active`），复用 `resolveCandidateScope` 与既有日期分组、游标分页；2.4 的用例落在 `collector-ingestion.integration.test.ts`（归档行在新一轮入库中 `latest_run_id`/`latest_creator_observation_id` 前进、`archived_at` 不变、版本 1→2→3）；2.5 拆成 `media-cleanup.integration.test.ts`（归档候选的 confirmed 素材 400 天仍不回收）与 `candidate-access.integration.test.ts`（归档后签名地址的成员范围结论不变）两处。`archiveCandidate`/`unarchiveCandidate` 已从 `packages/domain/src/index.ts` 导出供 API 使用。
 
 ## 3. 标签写入（domain）
 
