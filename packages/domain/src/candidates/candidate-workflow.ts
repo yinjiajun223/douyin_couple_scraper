@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { writeAuditEvent } from '../audit/audit-events.js';
 import type { WorkspaceRole } from '../auth/permissions.js';
+import { assertPermission } from '../auth/permissions.js';
 import { candidateVisibilityPredicate, resolveCandidateScope } from './candidate-access.js';
 import type { CandidateAccessContext } from './candidate-access.js';
 
@@ -49,6 +50,11 @@ interface OutreachRow extends RowDataPacket {
   owner_name: string | null;
   quoted_amount: string | number | null;
   version: number;
+}
+
+interface TagRow extends RowDataPacket {
+  id: string;
+  name: string;
 }
 
 interface WorkflowReviewRow extends RowDataPacket {
@@ -96,6 +102,16 @@ const archiveSchema = z
     candidateId: z.uuid(),
     expectedVersion: z.number().int().positive(),
     note: z.string().trim().min(1).max(500).nullable().optional(),
+    workspaceId: z.uuid(),
+  })
+  .strict();
+
+const tagsSchema = z
+  .object({
+    actorRole: z.enum(['admin', 'operator', 'readonly']),
+    actorUserId: z.uuid(),
+    candidateId: z.uuid(),
+    tags: z.array(z.string().trim().min(1).max(100)).max(20),
     workspaceId: z.uuid(),
   })
   .strict();
@@ -257,6 +273,84 @@ async function setCandidateArchived(pool: Pool, rawInput: unknown, archived: boo
       workspaceId: input.workspaceId,
     });
     return { id: input.candidateId, version: candidate.version + 1 };
+  });
+}
+
+// 标签是候选行旁边的关联表，改动不递增 campaign_candidates.version：
+// 递增会让正在填写的复核或跟进表单撞上版本冲突，而标签本身不需要这种互斥。
+export async function setCandidateTags(pool: Pool, rawInput: unknown) {
+  const input = tagsSchema.parse(rawInput);
+  // 其余候选写操作依赖 API 的 candidate:write 校验；标签是新增写入面，这里直接拒绝只读成员。
+  assertPermission(input.actorRole, 'candidate:write');
+  const requested = [...new Set(input.tags.map((tag) => tag.trim()))].sort();
+
+  return withTransaction(pool, async (connection) => {
+    await lockCandidate(connection, input, input.candidateId);
+    const [existing] = await connection.query<TagRow[]>(
+      `SELECT tags.id, tags.name
+       FROM candidate_tags
+       JOIN tags ON tags.workspace_id = candidate_tags.workspace_id AND tags.id = candidate_tags.tag_id
+       WHERE candidate_tags.workspace_id = ? AND candidate_tags.candidate_id = ?`,
+      [input.workspaceId, input.candidateId],
+    );
+    const tagIds = new Map(existing.map((row) => [row.name, row.id]));
+    const added = requested.filter((name) => !tagIds.has(name));
+    if (added.length > 0) {
+      // upsert 之后回读，而不是「先查后插」：两名成员同时创建同名标签时，
+      // uq_tags_workspace_name 只会保留一行，回读才能拿到胜出的那个 id。
+      // 回读用加锁读（当前读）而不是快照读，否则会读到事务开始前的旧快照。
+      await connection.execute(
+        `INSERT INTO tags (id, workspace_id, name)
+         VALUES ${added.map(() => '(?, ?, ?)').join(', ')}
+         ON DUPLICATE KEY UPDATE id = id`,
+        added.flatMap((name) => [randomUUID(), input.workspaceId, name]),
+      );
+      const [created] = await connection.query<TagRow[]>(
+        `SELECT id, name FROM tags
+         WHERE workspace_id = ? AND name IN (${added.map(() => '?').join(', ')})
+         FOR SHARE`,
+        [input.workspaceId, ...added],
+      );
+      for (const tag of created) tagIds.set(tag.name, tag.id);
+      await connection.execute(
+        `INSERT INTO candidate_tags (workspace_id, candidate_id, tag_id, created_by_user_id)
+         VALUES ${added.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        added.flatMap((name) => [
+          input.workspaceId,
+          input.candidateId,
+          tagIds.get(name)!,
+          input.actorUserId,
+        ]),
+      );
+    }
+    const removed = [...tagIds.keys()].filter((name) => !requested.includes(name));
+    if (removed.length > 0) {
+      // 只解除关联，标签本身留在词表里：同名标签可能还挂在别的候选上。
+      await connection.execute(
+        `DELETE FROM candidate_tags
+         WHERE workspace_id = ? AND candidate_id = ?
+           AND tag_id IN (${removed.map(() => '?').join(', ')})`,
+        [input.workspaceId, input.candidateId, ...removed.map((name) => tagIds.get(name)!)],
+      );
+    }
+    if (added.length > 0 || removed.length > 0) {
+      await appendCandidateEvent(connection, {
+        actorUserId: input.actorUserId,
+        candidateId: input.candidateId,
+        changedFields: { added, removed, tags: requested },
+        eventType: 'tags_changed',
+        workspaceId: input.workspaceId,
+      });
+      await writeAuditEvent(connection, {
+        action: 'candidate.tags_changed',
+        actorUserId: input.actorUserId,
+        subjectId: input.candidateId,
+        subjectType: 'candidate',
+        summary: { added, removed },
+        workspaceId: input.workspaceId,
+      });
+    }
+    return { id: input.candidateId, tags: requested };
   });
 }
 

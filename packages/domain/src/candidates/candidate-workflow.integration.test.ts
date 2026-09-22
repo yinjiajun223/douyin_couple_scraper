@@ -6,9 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDefaultCampaignRuleSet } from '@douyin/contracts';
 
 import { bootstrapFirstAdmin } from '../auth/bootstrap-admin.js';
+import { PermissionDeniedError } from '../auth/permissions.js';
 import { createMysqlPool, runMigrations } from '../database/migrations.js';
 import { seedInitialWorkspace } from '../database/seed.js';
 import { getOperationsDashboard } from '../dashboard/operations-dashboard.js';
+import { exportCandidateCsv } from './candidate-export.js';
+import { listCandidates } from './candidate-library.js';
 import {
   appendCandidateNote,
   archiveCandidate,
@@ -17,12 +20,12 @@ import {
   getCandidateWorkflow,
   InvalidPipelineTransitionError,
   OutreachVersionConflictError,
+  setCandidateTags,
   submitManualReview,
   transitionCandidatePipeline,
   unarchiveCandidate,
   updateCandidateOutreach,
 } from './candidate-workflow.js';
-import { exportCandidateCsv } from './candidate-export.js';
 
 const databaseUrl = process.env.MYSQL_TEST_URL;
 const describeWithMysql = databaseUrl ? describe : describe.skip;
@@ -556,5 +559,184 @@ describeWithMysql('manual review and outreach workflow', () => {
     );
     expect(rows[0]?.archived_at).toBeNull();
     expect(rows[0]?.version).toBe(1);
+  });
+  const readTagNames = async (targetCandidateId: string) => {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT tags.name FROM candidate_tags
+       JOIN tags ON tags.workspace_id = candidate_tags.workspace_id
+        AND tags.id = candidate_tags.tag_id
+       WHERE candidate_tags.workspace_id = ? AND candidate_tags.candidate_id = ?`,
+      [workspaceId, targetCandidateId],
+    );
+    return rows.map((row) => row.name as string).sort();
+  };
+
+  it('标签按名复用同一词表，移除只解除关联', async () => {
+    const first = await createPendingCandidate('workflow-tags-first');
+    const second = await createPendingCandidate('workflow-tags-second');
+
+    const created = await setCandidateTags(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: first,
+      tags: [' 情侣 ', '校园', '校园'],
+      workspaceId,
+    });
+    expect(created).toEqual({ id: first, tags: ['情侣', '校园'] });
+    await setCandidateTags(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: second,
+      tags: ['情侣'],
+      workspaceId,
+    });
+
+    const [vocabulary] = await pool.query<RowDataPacket[]>(
+      `SELECT name FROM tags WHERE workspace_id = ? AND name IN ('情侣', '校园')`,
+      [workspaceId],
+    );
+    expect(vocabulary).toHaveLength(2);
+    expect(await readTagNames(first)).toEqual(['情侣', '校园'].sort());
+    expect(await readTagNames(second)).toEqual(['情侣']);
+
+    // 达人库既有的 tagNames 过滤直接命中新写入的关联，无需额外索引或改查询。
+    const filtered = await listCandidates(pool, {
+      ...adminAccess(),
+      limit: 50,
+      tagNames: ['情侣'],
+    });
+    expect(filtered.map((item) => item.id).sort()).toEqual([first, second].sort());
+
+    // 同样的标签集合重复提交是空操作：不写事件，也不写审计。
+    const [eventsBefore] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM candidate_events
+       WHERE candidate_id = ? AND event_type = 'tags_changed'`,
+      [first],
+    );
+    await setCandidateTags(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: first,
+      tags: ['校园', '情侣'],
+      workspaceId,
+    });
+    const [eventsAfter] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM candidate_events
+       WHERE candidate_id = ? AND event_type = 'tags_changed'`,
+      [first],
+    );
+    expect(Number(eventsAfter[0]?.total)).toBe(Number(eventsBefore[0]?.total));
+
+    await setCandidateTags(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      candidateId: second,
+      tags: [],
+      workspaceId,
+    });
+    expect(await readTagNames(second)).toEqual([]);
+    // 词表里的「情侣」仍在，第一位达人的关联不受影响。
+    expect(await readTagNames(first)).toEqual(['情侣', '校园'].sort());
+
+    const [eventRows] = await pool.query<RowDataPacket[]>(
+      `SELECT candidate_id, changed_fields_json FROM candidate_events
+       WHERE candidate_id IN (?, ?) AND event_type = 'tags_changed'
+       ORDER BY created_at, id`,
+      [first, second],
+    );
+    expect(eventRows).toHaveLength(3);
+    expect(eventRows[0]?.changed_fields_json).toMatchObject({
+      added: ['情侣', '校园'],
+      removed: [],
+    });
+    expect(eventRows[2]?.changed_fields_json).toMatchObject({ removed: ['情侣'] });
+
+    const [audits] = await pool.query<RowDataPacket[]>(
+      `SELECT action FROM audit_events WHERE subject_id IN (?, ?) AND subject_type = 'candidate'`,
+      [first, second],
+    );
+    expect(audits).toHaveLength(3);
+    expect(audits.every((row) => row.action === 'candidate.tags_changed')).toBe(true);
+  });
+
+  it('两名成员同时创建同名标签时词表只留一行且都指向它', async () => {
+    const left = await createPendingCandidate('workflow-tags-race-left');
+    const right = await createPendingCandidate('workflow-tags-race-right');
+
+    await Promise.all([
+      setCandidateTags(pool, {
+        actorRole: 'admin',
+        actorUserId,
+        candidateId: left,
+        tags: ['并发标签'],
+        workspaceId,
+      }),
+      setCandidateTags(pool, {
+        actorRole: 'admin',
+        actorUserId,
+        candidateId: right,
+        tags: ['并发标签'],
+        workspaceId,
+      }),
+    ]);
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT tags.id, COUNT(candidate_tags.candidate_id) AS total
+       FROM tags
+       LEFT JOIN candidate_tags ON candidate_tags.workspace_id = tags.workspace_id
+        AND candidate_tags.tag_id = tags.id
+       WHERE tags.workspace_id = ? AND tags.name = '并发标签'
+       GROUP BY tags.id`,
+      [workspaceId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.total)).toBe(2);
+  });
+
+  it('只读成员与可见范围之外的成员都不能改标签', async () => {
+    const target = await createPendingCandidate('workflow-tags-guard');
+
+    await expect(
+      setCandidateTags(pool, {
+        actorRole: 'readonly',
+        actorUserId,
+        candidateId: target,
+        tags: ['受限标签'],
+        workspaceId,
+      }),
+    ).rejects.toBeInstanceOf(PermissionDeniedError);
+
+    const outsiderId = randomUUID();
+    await pool.execute(
+      `INSERT INTO users (id, email, password_hash, display_name)
+       VALUES (?, ?, 'integration-test-only', '范围外成员')`,
+      [outsiderId, `tags-outsider-${outsiderId}@example.test`],
+    );
+    await pool.execute(
+      `INSERT INTO memberships (workspace_id, user_id, role) VALUES (?, ?, 'operator')`,
+      [workspaceId, outsiderId],
+    );
+    await expect(
+      setCandidateTags(pool, {
+        actorRole: 'operator',
+        actorUserId: outsiderId,
+        candidateId: target,
+        tags: ['受限标签'],
+        workspaceId,
+      }),
+    ).rejects.toBeInstanceOf(CandidateWorkflowNotFoundError);
+
+    const [vocabulary] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM tags WHERE workspace_id = ? AND name = '受限标签'`,
+      [workspaceId],
+    );
+    expect(Number(vocabulary[0]?.total)).toBe(0);
+    expect(await readTagNames(target)).toEqual([]);
+    const [events] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total FROM candidate_events
+       WHERE candidate_id = ? AND event_type = 'tags_changed'`,
+      [target],
+    );
+    expect(Number(events[0]?.total)).toBe(0);
   });
 });

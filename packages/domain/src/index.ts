@@ -172,6 +172,7 @@ export {
   InvalidPipelineTransitionError,
   OutreachVersionConflictError,
   PIPELINE_STATUSES,
+  setCandidateTags,
   submitManualReview,
   transitionCandidatePipeline,
   unarchiveCandidate,
