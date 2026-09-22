@@ -149,6 +149,9 @@ export function CandidatesPage({
   }
 
   const groupedCandidates = groupCandidatesByDate(visibleCandidates);
+  // 保存后重拉详情时不能卸载面板：折叠区展开状态与已取到的截图签名地址都是本地状态，
+  // 卸载一次就会把运营正在填的联系资料重新收起、截图重新加载。切换达人时仍照常卸载。
+  const keepDetailMounted = detail !== null && detail.candidate.id === selectedCandidateId;
   const emptyLibraryText =
     candidateSection.value === 'all'
       ? '还没有入库的达人。采集同步并满足全部硬筛条件后会进入这里。'
@@ -329,11 +332,11 @@ export function CandidatesPage({
                 {loadError}
               </p>
             ) : null}
-            {loading ? <EmptyPanel text="正在调取历史证据…" /> : null}
+            {loading && !keepDetailMounted ? <EmptyPanel text="正在调取历史证据…" /> : null}
             {!loading && !detail ? (
               <EmptyPanel text="选择一位达人，查看历次观察、任务来源和当时使用的规则证据。" />
             ) : null}
-            {!loading && detail ? (
+            {detail && (!loading || keepDetailMounted) ? (
               <CandidateDetailView
                 key={detail.candidate.id}
                 canWrite={canWrite}
@@ -357,6 +360,42 @@ export function CandidatesPage({
   );
 }
 
+async function requestSignedMediaUrl(mediaId: string, signal?: AbortSignal) {
+  const response = await fetch(`/media/${mediaId}/access`, {
+    credentials: 'include',
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) throw new Error('media unavailable');
+  const result = (await response.json()) as { downloadUrl?: unknown };
+  const downloadUrl = result.downloadUrl;
+  if (typeof downloadUrl !== 'string' || !downloadUrl.trim()) {
+    throw new Error('media URL unavailable');
+  }
+  return downloadUrl;
+}
+
+async function describeWorkflowFailure(response: Response) {
+  // 409 同时承载「版本冲突」和「阶段不允许流转」，只看状态码会把流转错误误报成同事抢改。
+  const code = response.status === 409 ? await readErrorCode(response) : '';
+  if (code === 'INVALID_PIPELINE_TRANSITION') {
+    return '当前阶段不允许直接改到这个状态，请重新打开达人后选择相邻阶段。';
+  }
+  if (response.status === 409) return '这条记录已被同事更新，请重新打开达人后再提交。';
+  if (response.status === 400) return '提交内容不完整或格式不正确，请重新打开达人后重试。';
+  if (response.status === 403) return '当前角色没有修改权限。';
+  if (response.status === 404) return '找不到这条达人记录，可能已被删除或不在你的可见范围内。';
+  return '保存失败，请稍后重试。';
+}
+
+async function readErrorCode(response: Response) {
+  try {
+    const body = (await response.clone().json()) as { code?: unknown };
+    return typeof body.code === 'string' ? body.code : '';
+  } catch {
+    return '';
+  }
+}
+
 export function CandidateDetailView({
   detail,
   canWrite,
@@ -372,10 +411,38 @@ export function CandidateDetailView({
   const [workflowMessage, setWorkflowMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const [mediaFailures, setMediaFailures] = useState<Record<string, true>>({});
   const [previewImage, setPreviewImage] = useState<{ alt: string; src: string } | null>(null);
   const [assignees, setAssignees] = useState<Array<{ id: string; displayName: string }>>([]);
   const [assigneesLoaded, setAssigneesLoaded] = useState(false);
   const [ownerUserId, setOwnerUserId] = useState(detail.workflow?.outreach?.ownerUserId ?? '');
+  const mediaKey = (detail.media ?? []).map((media) => media.id).join(',');
+  useEffect(() => {
+    // 截图是复核的主要依据，打开详情就一次性预取全部签名地址，避免逐张点击等待。
+    const mediaIds = mediaKey ? mediaKey.split(',') : [];
+    if (!mediaIds.length) return;
+    const controller = new AbortController();
+    void Promise.all(
+      mediaIds.map(async (mediaId) => {
+        try {
+          return { mediaId, url: await requestSignedMediaUrl(mediaId, controller.signal) };
+        } catch {
+          return { mediaId, url: null };
+        }
+      }),
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      const urls: Record<string, string> = {};
+      const failures: Record<string, true> = {};
+      for (const result of results) {
+        if (result.url) urls[result.mediaId] = result.url;
+        else failures[result.mediaId] = true;
+      }
+      if (Object.keys(urls).length) setMediaUrls(urls);
+      if (Object.keys(failures).length) setMediaFailures(failures);
+    });
+    return () => controller.abort();
+  }, [mediaKey]);
   useEffect(() => {
     if (!canWrite) return;
     const controller = new AbortController();
@@ -407,12 +474,8 @@ export function CandidateDetailView({
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
         method,
       });
-      if (response.status === 409) {
-        setWorkflowMessage('这条记录已被同事更新，请重新打开达人后再提交。');
-        return false;
-      }
       if (!response.ok) {
-        setWorkflowMessage('保存失败，请检查必填内容和当前阶段。');
+        setWorkflowMessage(await describeWorkflowFailure(response));
         return false;
       }
       onSaved();
@@ -427,16 +490,15 @@ export function CandidateDetailView({
 
   async function loadPrivateImage(mediaId: string) {
     try {
-      const response = await fetch(`/media/${mediaId}/access`, { credentials: 'include' });
-      if (!response.ok) throw new Error('media unavailable');
-      const result = (await response.json()) as { downloadUrl?: unknown };
-      const downloadUrl = result.downloadUrl;
-      if (typeof downloadUrl !== 'string' || !downloadUrl.trim()) {
-        throw new Error('media URL unavailable');
-      }
+      const downloadUrl = await requestSignedMediaUrl(mediaId);
+      setMediaFailures((current) => {
+        const next = { ...current };
+        delete next[mediaId];
+        return next;
+      });
       setMediaUrls((current) => ({ ...current, [mediaId]: downloadUrl }));
     } catch {
-      setWorkflowMessage('截图加载失败，请稍后重试或检查 OSS 配置。');
+      setMediaFailures((current) => ({ ...current, [mediaId]: true }));
     }
   }
   return (
@@ -477,10 +539,12 @@ export function CandidateDetailView({
                       <img alt={imageAlt} src={imageUrl} />
                       <span>点击放大</span>
                     </button>
-                  ) : (
+                  ) : mediaFailures[media.id] ? (
                     <button onClick={() => void loadPrivateImage(media.id)} type="button">
-                      查看{media.purpose === 'profile_screenshot' ? '主页' : '作品'}截图
+                      截图加载失败，点击重试
                     </button>
+                  ) : (
+                    <p className="private-media-pending">截图加载中…</p>
                   )}
                   <figcaption>{formatRunTime(media.createdAt)}</figcaption>
                 </figure>
@@ -587,6 +651,14 @@ export function CandidateDetailView({
             {detail.workflow.outreach.nextAction ?? '未填写'}
           </p>
         ) : null}
+        {saving || workflowMessage ? (
+          <p
+            className={saving || !workflowMessage ? undefined : 'form-error'}
+            role={saving ? 'status' : 'alert'}
+          >
+            {saving ? '正在保存，请稍候…' : workflowMessage}
+          </p>
+        ) : null}
         {canWrite && detail.workflow ? (
           <div className="workflow-editor-grid">
             <form
@@ -608,13 +680,16 @@ export function CandidateDetailView({
                 name="decision"
                 options={reviewDecisionOptions}
               />
-              <label>
-                理由
-                <textarea name="reason" placeholder="不符合时必填，也可记录待定原因" />
-              </label>
               <button disabled={saving} type="submit">
                 保存人工结论
               </button>
+              <details className="workflow-optional">
+                <summary>补充理由（可选）</summary>
+                <label>
+                  理由
+                  <textarea name="reason" placeholder="可留空；填写后会永久保留在复核历史里" />
+                </label>
+              </details>
             </form>
             <form
               className="workflow-form"
@@ -635,123 +710,130 @@ export function CandidateDetailView({
                 name="nextStatus"
                 options={pipelineStatusOptions}
               />
-              <label>
-                说明
-                <input name="note" placeholder="本次状态变更说明" />
-              </label>
               <button disabled={saving} type="submit">
                 更新阶段
               </button>
+              <details className="workflow-optional">
+                <summary>补充说明（可选）</summary>
+                <label>
+                  说明
+                  <input name="note" placeholder="本次状态变更说明" />
+                </label>
+              </details>
             </form>
-            <form
-              className="workflow-form workflow-form-wide contact-fields"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const form = new FormData(event.currentTarget);
-                const quotedAmount = String(form.get('quotedAmount') ?? '').trim();
-                void submitWorkflowRequest(
-                  `/candidates/${detail.candidate.id}/outreach`,
-                  {
-                    contactChannel: String(form.get('contactChannel') ?? '').trim() || null,
-                    contactValue: String(form.get('contactValue') ?? '').trim() || null,
-                    currency: quotedAmount ? 'CNY' : null,
-                    expectedVersion: detail.workflow!.outreach?.version ?? 0,
-                    nextAction: String(form.get('nextAction') ?? '').trim() || null,
-                    ownerUserId: assigneesLoaded
-                      ? String(form.get('ownerUserId') ?? '').trim() || null
-                      : (detail.workflow!.outreach?.ownerUserId ?? null),
-                    quotedAmount: quotedAmount ? Number(quotedAmount) : null,
-                  },
-                  'PUT',
-                );
-              }}
-            >
-              <h4>联系资料</h4>
-              <FilterSelect
-                disabled={!assigneesLoaded}
-                label="负责人"
-                name="ownerUserId"
-                onChange={setOwnerUserId}
-                options={[
-                  { label: assigneesLoaded ? '未分配' : '正在加载成员…', value: '' },
-                  ...(detail.workflow.outreach?.ownerUserId &&
-                  !assignees.some((member) => member.id === detail.workflow!.outreach!.ownerUserId)
-                    ? [
-                        {
-                          label: detail.workflow.outreach.ownerDisplayName ?? '当前负责人',
-                          value: detail.workflow.outreach.ownerUserId,
-                        },
-                      ]
-                    : []),
-                  ...assignees.map((member) => ({
-                    label: member.displayName,
-                    value: member.id,
-                  })),
-                ]}
-                value={ownerUserId}
-              />
-              <label>
-                联系渠道
-                <input
-                  defaultValue={detail.workflow.outreach?.contactChannel ?? ''}
-                  name="contactChannel"
-                />
-              </label>
-              <label>
-                联系方式
-                <input
-                  defaultValue={detail.workflow.outreach?.contactValue ?? ''}
-                  name="contactValue"
-                />
-              </label>
-              <label>
-                报价（CNY）
-                <input
-                  defaultValue={detail.workflow.outreach?.quotedAmount ?? ''}
-                  min="0"
-                  name="quotedAmount"
-                  type="number"
-                />
-              </label>
-              <label>
-                下一步
-                <input
-                  defaultValue={detail.workflow.outreach?.nextAction ?? ''}
-                  name="nextAction"
-                />
-              </label>
-              <button disabled={saving} type="submit">
-                保存联系资料
-              </button>
-            </form>
-            <form
-              className="workflow-form workflow-form-wide"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const formElement = event.currentTarget;
-                const form = new FormData(formElement);
-                void submitWorkflowRequest(`/candidates/${detail.candidate.id}/notes`, {
-                  body: form.get('body'),
-                }).then((saved) => {
-                  if (saved) formElement.reset();
-                });
-              }}
-            >
-              <h4>追加沟通记录</h4>
-              <textarea
-                aria-label="沟通记录"
-                name="body"
-                placeholder="新记录只追加，不覆盖旧记录"
-                required
-              />
-              <button disabled={saving} type="submit">
-                追加记录
-              </button>
-            </form>
+            <details className="workflow-more workflow-form-wide">
+              <summary>联系资料与沟通记录（跟进阶段再填）</summary>
+              <div className="workflow-more-grid">
+                <form
+                  className="workflow-form contact-fields"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const form = new FormData(event.currentTarget);
+                    const quotedAmount = String(form.get('quotedAmount') ?? '').trim();
+                    void submitWorkflowRequest(
+                      `/candidates/${detail.candidate.id}/outreach`,
+                      {
+                        contactChannel: String(form.get('contactChannel') ?? '').trim() || null,
+                        contactValue: String(form.get('contactValue') ?? '').trim() || null,
+                        currency: quotedAmount ? 'CNY' : null,
+                        expectedVersion: detail.workflow!.outreach?.version ?? 0,
+                        nextAction: String(form.get('nextAction') ?? '').trim() || null,
+                        ownerUserId: assigneesLoaded
+                          ? String(form.get('ownerUserId') ?? '').trim() || null
+                          : (detail.workflow!.outreach?.ownerUserId ?? null),
+                        quotedAmount: quotedAmount ? Number(quotedAmount) : null,
+                      },
+                      'PUT',
+                    );
+                  }}
+                >
+                  <h4>联系资料</h4>
+                  <FilterSelect
+                    disabled={!assigneesLoaded}
+                    label="负责人"
+                    name="ownerUserId"
+                    onChange={setOwnerUserId}
+                    options={[
+                      { label: assigneesLoaded ? '未分配' : '正在加载成员…', value: '' },
+                      ...(detail.workflow.outreach?.ownerUserId &&
+                      !assignees.some(
+                        (member) => member.id === detail.workflow!.outreach!.ownerUserId,
+                      )
+                        ? [
+                            {
+                              label: detail.workflow.outreach.ownerDisplayName ?? '当前负责人',
+                              value: detail.workflow.outreach.ownerUserId,
+                            },
+                          ]
+                        : []),
+                      ...assignees.map((member) => ({
+                        label: member.displayName,
+                        value: member.id,
+                      })),
+                    ]}
+                    value={ownerUserId}
+                  />
+                  <label>
+                    联系渠道
+                    <input
+                      defaultValue={detail.workflow.outreach?.contactChannel ?? ''}
+                      name="contactChannel"
+                    />
+                  </label>
+                  <label>
+                    联系方式
+                    <input
+                      defaultValue={detail.workflow.outreach?.contactValue ?? ''}
+                      name="contactValue"
+                    />
+                  </label>
+                  <label>
+                    报价（CNY）
+                    <input
+                      defaultValue={detail.workflow.outreach?.quotedAmount ?? ''}
+                      min="0"
+                      name="quotedAmount"
+                      type="number"
+                    />
+                  </label>
+                  <label>
+                    下一步
+                    <input
+                      defaultValue={detail.workflow.outreach?.nextAction ?? ''}
+                      name="nextAction"
+                    />
+                  </label>
+                  <button disabled={saving} type="submit">
+                    保存联系资料
+                  </button>
+                </form>
+                <form
+                  className="workflow-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const formElement = event.currentTarget;
+                    const form = new FormData(formElement);
+                    void submitWorkflowRequest(`/candidates/${detail.candidate.id}/notes`, {
+                      body: form.get('body'),
+                    }).then((saved) => {
+                      if (saved) formElement.reset();
+                    });
+                  }}
+                >
+                  <h4>追加沟通记录</h4>
+                  <textarea
+                    aria-label="沟通记录"
+                    name="body"
+                    placeholder="新记录只追加，不覆盖旧记录"
+                    required
+                  />
+                  <button disabled={saving} type="submit">
+                    追加记录
+                  </button>
+                </form>
+              </div>
+            </details>
           </div>
-        ) : null}
-        {saving || workflowMessage ? (
-          <p role="status">{saving ? '正在保存，请稍候…' : workflowMessage}</p>
         ) : null}
         {(detail.workflow?.notes ?? []).length ? (
           <ol className="workflow-history">

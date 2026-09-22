@@ -868,7 +868,7 @@ test('达人详情保留历史粉丝变化、任务来源和旧规则作品证�
   await expect(detail.getByText(/当前负责人：运营同事/)).toBeVisible();
   await expect(detail.getByText('对方希望先看产品介绍')).toBeVisible();
   await expect(detail.getByText('待复核 → 待联系')).toBeVisible();
-  await detail.getByRole('button', { name: '查看主页截图' }).click();
+  // 截图打开详情即自动加载，不需要运营逐张点击（点击加载让复核慢到没人愿意看图）。
   await expect(detail.getByRole('img', { name: '主页证据截图' })).toBeVisible();
   await detail.getByRole('button', { name: '放大查看主页证据截图' }).click();
   const imagePreview = page.getByRole('dialog', { name: '主页证据截图预览' });

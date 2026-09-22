@@ -1580,6 +1580,12 @@ textarea:focus {
   object-fit: contain;
 }
 
+.private-media-pending {
+  margin: 0;
+  color: var(--graphite);
+  font-size: 13px;
+}
+
 .private-media-preview-trigger {
   position: relative;
   display: block;
@@ -1760,6 +1766,31 @@ textarea:focus {
 .contact-fields h4,
 .contact-fields button {
   grid-column: 1 / -1;
+}
+
+.workflow-optional > summary,
+.workflow-more > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: #3c465b;
+}
+
+.workflow-optional {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-more {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+}
+
+.workflow-more-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
 }
 
 .workflow-history {
@@ -2200,6 +2231,9 @@ textarea:focus {
     text-align: center;
   }
   .workflow-editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .workflow-more-grid {
     grid-template-columns: 1fr;
   }
   .contact-fields {

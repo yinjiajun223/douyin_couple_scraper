@@ -274,6 +274,10 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await expect(page.locator('.library-count')).toHaveText('2 位待复核');
     await page.getByRole('button', { name: /流程测试同学/ }).click();
     await expect(page.getByRole('heading', { name: '私有证据截图' })).toBeVisible();
+    // 截图必须在打开详情时自动取到签名地址，运营不该再为每张图点一次「查看截图」。
+    await expect(page.getByRole('img', { name: /证据截图/u }).first()).toBeVisible();
+    // 快速复核路径默认只显示结论下拉与保存按钮，理由收在可选折叠里。
+    await page.getByText('补充理由（可选）').click();
     await page.getByLabel('理由', { exact: true }).fill('已人工核验公开内容，适合进一步沟通');
     await page.getByRole('button', { name: '保存人工结论' }).click();
     await expect(page.getByText(/最新人工结论：通过/)).toBeVisible();
@@ -285,6 +289,8 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     // 阶段已在服务端推进，列表跟着离开「待复核」分区，运营不需要手工刷新。
     await expect(page.locator('.library-count')).toHaveText('1 位待复核');
     await expect(page.getByRole('button', { name: /流程测试同学/ })).toHaveCount(0);
+    // 联系资料与沟通记录收在跟进用的折叠区里，复核阶段不占屏。
+    await page.getByText('联系资料与沟通记录（跟进阶段再填）').click();
     await page.getByRole('button', { name: /负责人/ }).click();
     await page.getByRole('option', { name: '流程验收员', exact: true }).click();
     await page.getByLabel('联系渠道', { exact: true }).fill('抖音');
@@ -312,7 +318,8 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     const reviewForm = page.locator('form.workflow-form').filter({ hasText: '复核结论' });
     await reviewForm.getByRole('button', { name: /^结论/u }).click();
     await reviewForm.getByRole('option', { name: '不符合', exact: true }).click();
-    await page.getByLabel('理由', { exact: true }).fill('人设与校园情侣定位不符');
+    await reviewForm.getByText('补充理由（可选）').click();
+    await reviewForm.getByLabel('理由', { exact: true }).fill('人设与校园情侣定位不符');
     await page.getByRole('button', { name: '保存人工结论' }).click();
     await expect(page.getByText(/最新人工结论：不符合/)).toBeVisible();
     await expect(
