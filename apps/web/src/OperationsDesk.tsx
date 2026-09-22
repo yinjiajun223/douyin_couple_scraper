@@ -192,6 +192,9 @@ export function OperationsDesk({
     }
   }
 
+  // 达人库与运行监控是主从两栏，需要锁死外层高度，让左右两栏各自滚动。
+  const splitView = view === 'candidates' || view === 'runs';
+
   return (
     <div className="app-shell">
       <aside className="side-rail">
@@ -284,84 +287,88 @@ export function OperationsDesk({
         </div>
       </aside>
 
-      <main className="workspace">
-        <div className="workspace-toolbar">
-          <span className="workspace-breadcrumb">
-            团队工作台 <span aria-hidden="true">/</span> 抖音
-          </span>
-          <button
-            className="workspace-refresh"
-            disabled={workspaceLoading}
-            onClick={() => setRefreshKey((key) => key + 1)}
-            type="button"
-          >
-            <span aria-hidden="true">↻</span>
-            {workspaceLoading ? '正在刷新…' : '刷新数据'}
-          </button>
-        </div>
-        {workspaceLoadError ? (
-          <div className="network-banner" role="alert">
-            网络连接失败或会话已过期，当前数据可能不是最新。请重试刷新；如仍失败，请重新登录。
+      <div className={splitView ? 'workspace-scroll workspace-scroll-fill' : 'workspace-scroll'}>
+        <main className={splitView ? 'workspace workspace-fill' : 'workspace'}>
+          <div className="workspace-toolbar">
+            <span className="workspace-breadcrumb">
+              团队工作台 <span aria-hidden="true">/</span> 抖音
+            </span>
+            <button
+              className="workspace-refresh"
+              disabled={workspaceLoading}
+              onClick={() => setRefreshKey((key) => key + 1)}
+              type="button"
+            >
+              <span aria-hidden="true">↻</span>
+              {workspaceLoading ? '正在刷新…' : '刷新数据'}
+            </button>
           </div>
-        ) : null}
-        {view === 'today' ? (
-          <TodayPage
-            canWrite={canWriteCampaigns}
-            dashboard={dashboard}
-            onCreate={() => {
-              setCreateRequested(true);
-              setView('campaigns');
-            }}
-            onOpenDevices={() => setView('devices')}
-            deviceCount={devices.filter((device) => device.status === 'active').length}
-            campaignCount={campaigns.length}
-            onOpenCandidates={(preset) => {
-              setCandidatePreset(preset);
-              setView('candidates');
-            }}
-            onOpenRuns={(preset) => {
-              setRunPreset(preset);
-              setView('runs');
-            }}
-          />
-        ) : null}
-        {view === 'campaigns' ? (
-          <CampaignsPage
-            campaigns={campaigns}
-            canWrite={canWriteCampaigns}
-            csrfToken={csrfToken}
-            initialEditing={createRequested}
-            onOpenRuns={() => {
-              setRunPreset(null);
-              setView('runs');
-            }}
-            onCreated={(campaign) => setCampaigns((current) => [campaign, ...current])}
-          />
-        ) : null}
-        {view === 'runs' ? <RunsPage preset={runPreset} runs={runs} /> : null}
-        {view === 'candidates' ? (
-          <CandidatesPage
-            canWrite={user.role !== 'readonly'}
-            csrfToken={csrfToken}
-            currentUserId={user.id}
-            members={members}
-            preset={candidatePreset}
-            role={user.role}
-          />
-        ) : null}
-        {view === 'members' && canManageMembers ? (
-          <MembersPage csrfToken={csrfToken} members={members} />
-        ) : null}
-        {view === 'devices' && canManageDevices ? (
-          <DevicesPage
-            csrfToken={csrfToken}
-            devices={devices}
-            onChanged={() => setRefreshKey((key) => key + 1)}
-          />
-        ) : null}
-        {view === 'templates' && canManageMembers ? <TemplatesPage templates={templates} /> : null}
-        {view === 'audit' && canManageMembers ? <AuditPage events={auditEvents} /> : null}
-      </main>
+          {workspaceLoadError ? (
+            <div className="network-banner" role="alert">
+              网络连接失败或会话已过期，当前数据可能不是最新。请重试刷新；如仍失败，请重新登录。
+            </div>
+          ) : null}
+          {view === 'today' ? (
+            <TodayPage
+              canWrite={canWriteCampaigns}
+              dashboard={dashboard}
+              onCreate={() => {
+                setCreateRequested(true);
+                setView('campaigns');
+              }}
+              onOpenDevices={() => setView('devices')}
+              deviceCount={devices.filter((device) => device.status === 'active').length}
+              campaignCount={campaigns.length}
+              onOpenCandidates={(preset) => {
+                setCandidatePreset(preset);
+                setView('candidates');
+              }}
+              onOpenRuns={(preset) => {
+                setRunPreset(preset);
+                setView('runs');
+              }}
+            />
+          ) : null}
+          {view === 'campaigns' ? (
+            <CampaignsPage
+              campaigns={campaigns}
+              canWrite={canWriteCampaigns}
+              csrfToken={csrfToken}
+              initialEditing={createRequested}
+              onOpenRuns={() => {
+                setRunPreset(null);
+                setView('runs');
+              }}
+              onCreated={(campaign) => setCampaigns((current) => [campaign, ...current])}
+            />
+          ) : null}
+          {view === 'runs' ? <RunsPage preset={runPreset} runs={runs} /> : null}
+          {view === 'candidates' ? (
+            <CandidatesPage
+              canWrite={user.role !== 'readonly'}
+              csrfToken={csrfToken}
+              currentUserId={user.id}
+              members={members}
+              preset={candidatePreset}
+              role={user.role}
+            />
+          ) : null}
+          {view === 'members' && canManageMembers ? (
+            <MembersPage csrfToken={csrfToken} members={members} />
+          ) : null}
+          {view === 'devices' && canManageDevices ? (
+            <DevicesPage
+              csrfToken={csrfToken}
+              devices={devices}
+              onChanged={() => setRefreshKey((key) => key + 1)}
+            />
+          ) : null}
+          {view === 'templates' && canManageMembers ? (
+            <TemplatesPage templates={templates} />
+          ) : null}
+          {view === 'audit' && canManageMembers ? <AuditPage events={auditEvents} /> : null}
+        </main>
+      </div>
     </div>
   );
 }

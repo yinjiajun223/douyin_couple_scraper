@@ -57,11 +57,10 @@ h3 {
 .app-shell {
   display: grid;
   grid-template-columns: 252px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 .side-rail {
-  position: sticky;
-  top: 0;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -220,10 +219,61 @@ h3 {
   box-shadow: 0 0 0 4px rgba(91, 200, 168, 0.12);
 }
 
+.workspace-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .workspace {
   width: min(1180px, 100%);
   margin: 0 auto;
   padding: 24px clamp(24px, 3vw, 48px) 64px;
+}
+/* 达人库和运行监控是主从两栏：整页滚动会把左侧列表一起带走，
+   运营滚到第 30 位达人时已经看不到自己点的是哪一条，所以这两页锁死高度，
+   改由左右两栏各自滚动，表头、分区切换和筛选条件始终留在视野里。 */
+.workspace-scroll-fill {
+  overflow: hidden;
+}
+.workspace-fill {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 16px;
+  padding-bottom: 24px;
+}
+.workspace-fill > .workspace-toolbar,
+.workspace-fill > .network-banner {
+  flex: 0 0 auto;
+}
+.workspace-fill > section {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.workspace-fill > section > header,
+.workspace-fill > section > p,
+.workspace-fill > section > .candidate-library-switcher,
+.workspace-fill > section > .candidate-library-filters {
+  flex: 0 0 auto;
+}
+/* 锁高之后列表能分到的高度很宝贵，页头在两栏页里收紧一档，把行数还给列表。 */
+.workspace-fill .workspace-toolbar {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+}
+.workspace-fill .section-page-header h1 {
+  font-size: 27px;
+}
+.workspace-fill .section-page-header .lede {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.workspace-fill .candidate-library-switcher {
+  margin-top: 16px;
 }
 .page-header,
 .section-page-header {
@@ -875,12 +925,17 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.55fr);
   gap: 20px;
+  flex: 1 1 auto;
+  min-height: 0;
   margin-top: 42px;
 }
 .run-list-panel {
   display: grid;
   align-content: start;
   gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px;
   border: 1px solid var(--line);
   background: #e8ebf0;
@@ -945,6 +1000,10 @@ textarea:focus {
   background: var(--signal);
 }
 .run-detail-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: clamp(24px, 4vw, 38px);
   border: 1px solid var(--line);
   border-radius: var(--panel-radius);
@@ -1291,12 +1350,17 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(290px, 0.74fr) minmax(0, 1.55fr);
   gap: 20px;
+  flex: 1 1 auto;
+  min-height: 0;
   margin-top: 18px;
 }
 .candidate-list {
   display: grid;
   align-content: start;
   gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px;
   border: 1px solid var(--line);
   background: #e8ebf0;
@@ -1306,10 +1370,14 @@ textarea:focus {
   gap: 2px;
 }
 .candidate-date-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   justify-content: space-between;
   padding: 10px 8px 7px;
   color: var(--graphite);
+  background: #e8ebf0;
   font-size: 10px;
   letter-spacing: 0.04em;
 }
@@ -1408,6 +1476,9 @@ textarea:focus {
 }
 .candidate-detail-shell {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--line);
   border-radius: var(--panel-radius);
   background: var(--paper);
@@ -2102,6 +2173,23 @@ textarea:focus {
   }
   .app-shell {
     grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    overflow: visible;
+  }
+  /* 窄屏下侧栏堆在工作台上方、主从两栏塌成一列，再锁高度只会把每栏压到半屏，
+     所以整页恢复文档流滚动。 */
+  .workspace-scroll,
+  .workspace-scroll-fill {
+    overflow: visible;
+  }
+  .workspace-fill {
+    height: auto;
+    overflow: visible;
+    padding-bottom: 64px;
+  }
+  .workspace-fill > section {
+    display: block;
+    flex: none;
   }
   .side-rail,
   .workspace {
@@ -2110,7 +2198,6 @@ textarea:focus {
     max-width: 100%;
   }
   .side-rail {
-    position: static;
     height: auto;
     min-height: auto;
     padding: 18px 20px;
@@ -2221,6 +2308,15 @@ textarea:focus {
   }
   .candidate-workspace {
     grid-template-columns: 1fr;
+  }
+  .run-list-panel,
+  .run-detail-panel,
+  .candidate-list,
+  .candidate-detail-shell {
+    overflow: visible;
+  }
+  .candidate-date-heading {
+    position: static;
   }
   .candidate-library-filters {
     grid-template-columns: 1fr;
