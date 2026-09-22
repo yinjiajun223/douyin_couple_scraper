@@ -48,22 +48,39 @@
 
 ## 8. 前端
 
-- [ ] 8.1 在 `apps/web/src/lib/api.ts`、`src/types.ts` 补归档 / 恢复、批量复核、批量归档、标签写入、成员停用 / 启用 / 改角色、邀请列表 / 撤销的接口封装与类型。验证：`npm run typecheck -w @douyin/web` 通过。
+- [ ] 8.1 在 `apps/web/src/types.ts` 补类型，在各页面沿用既有写法直接 `fetch` + `readResponse`（仓库没有 `src/lib/api.ts` 这样的集中封装层，不要新建）：归档 / 恢复、批量复核、批量归档、标签写入、成员停用 / 启用 / 改角色、邀请列表 / 撤销。`readResponse`（`src/api/client.ts`）目前把所有非 401 错误压成同一句文案，需让调用方能区分护栏拒绝、版本冲突与批量部分失败。验证：`npm run typecheck -w @douyin/web` 通过。
 - [ ] 8.2 在 `apps/web/src/pages/CandidatesPage.tsx` 补多选与批量操作栏（提交期间禁用并显示进度，不做乐观 UI）、归档 / 恢复入口、标签编辑，以及独立的「已归档」视图。批量选择 MUST 只提交用户实际勾选的 ID，不得由服务端展开筛选条件。验证：`npm run build -w @douyin/web` 通过，浏览器走查批量复核 5 条、批量归档 3 条、恢复 1 条、打标签与按标签筛选各一次。
 - [ ] 8.3 在 `apps/web/src/pages/MembersPage.tsx` 补角色变更、停用 / 启用、邀请列表与撤销，并在护栏触发时呈现禁用态与说明文案（不能停用自己、不能停用或降级最后一名管理员）。停用与降级需二次确认。验证：浏览器走查四种护栏态的文案与禁用表现，并确认非管理员看不到这些操作。
 - [ ] 8.4 确认 `GET /members/assignable`（`server.ts:646-655`）已过滤 `status === 'active'`，因此被停用成员不会出现在归属人下拉中。验证：浏览器走查归属人下拉不含已停用成员。
 
-## 9. 文档同步
+## 9. 筛选任务与模板界面（仅 web，后端零改动）
 
-- [ ] 9.1 更新 `docs/product-manual.md` 与 `docs/operations/operator-guide.md`：归档与恢复流程、「已归档」视图、批量复核与批量归档的操作方式与上限、标签的添加与筛选、以及「删除只能是软归档、采集事实字段不可编辑」的边界说明。验证：文档中的界面名称与 `apps/web/src/constants.ts` 的标签常量逐一对应，命令示例可完整复制且不含真实密码、Secret、Cookie、令牌或私钥。
-- [ ] 9.2 更新 `docs/operations/admin-guide.md`：成员停用 / 启用 / 改角色的效果与级联范围（停用会撤销全部会话与设备、启用不恢复设备）、邀请撤销、最后管理员护栏、以及护栏导致无法操作时用 `bootstrap-admin` CLI 救援的完整步骤。明确写出「停用是账户级而非工作区级」。验证：救援步骤中的命令可完整复制，`npm run bootstrap-admin -w @douyin/domain` 的调用形式与实际脚本一致。
-- [ ] 9.3 更新 `README.md` 中涉及成员管理或候选操作的描述（如有）。验证：`grep -n "只能邀请\|无法停用" README.md docs` 无遗留旧说法。
+- [x] 9.1 在 `apps/web/src/types.ts` 给 `CampaignSummary` 补 `rules`（与 `createCampaignSchema` 的 schemaVersion 2 结构一致）与 `source_template_id`，给 `CampaignTemplateSummary` 补 `rules`；修改 `OperationsDesk.tsx:74-79` 使 `GET /campaigns` 已返回的 `rules_json` 不再被丢弃。**不改** `packages/domain`、`apps/api`、`packages/contracts`。验证：`npm run typecheck` 通过，`git diff --stat packages apps/api apps/collector` 对本组为空。
+- [x] 9.2 把 `CampaignsPage.tsx` 的新建表单改为新建 / 编辑共用：编辑时用该任务的 `rules` 预填全部字段（移除硬编码 `defaultValue`），提交走 `PATCH /campaigns/:id` 并带 `expectedVersion`；新建仍走 `POST /campaigns`。验证：浏览器走查——编辑一个已有任务，表单显示的是它当前的粉丝范围与点赞门槛而不是默认值，保存后卡片版本号 +1。
+- [x] 9.3 处理 409：提交处直接判 `response.status === 409`，提示「该任务已被他人修改，请刷新后重试」，重新拉取 `/campaigns` 后再允许提交，**不做自动合并**。验证：浏览器走查——两个标签页同时编辑同一任务，后提交者看到该提示且其修改未被静默覆盖。
+- [x] 9.4 给任务卡片补「编辑」「复制」「归档」入口：复制调 `POST /campaigns/:id/copy`（要求输入新名称，≥2 字），归档调 `POST /campaigns/:id/archive` 且需二次确认；已归档卡片只保留「复制」，不再显示「创建运行」。归档为软操作且当前无恢复路由，确认文案 MUST NOT 声称可以恢复。验证：浏览器走查编辑、复制、归档各一次，归档后卡片状态变为「已归档」且不可创建运行。
+- [x] 9.5 新建任务表单增加「从模板预填」：优先发送 `templateId`（让服务端展开规则并记录 `source_template_id`），而不是前端把模板规则拷进表单。`GET /campaign-templates` 是 `workspace:manage`，运营会 403，因此模板列表只由 `OperationsDesk` 在管理员会话里随工作区一起拉取（运营会话直接得到空列表），不额外发出注定 403 的请求；无模板时静默隐藏下拉并回落到手填规则，不报错、不阻断提交。验证：以 admin 走查从模板创建（`source_template_id` 被记录），以 operator 走查新建任务仍可用且看不到模板下拉、控制台无未处理错误。
+- [x] 9.6 编辑保存成功后明确提示「规则快照已在每次运行开始时冻结，本次修改只影响新的运行」，避免运营误以为改条件会改变历史结论。验证：浏览器走查该提示出现，措辞与主 specs `screening-campaigns` 的「运行规则快照」一致。
+- [x] 9.7 给 `TemplatesPage.tsx` 补新建 / 编辑 / 归档（页面本身只由 `OperationsDesk` 在 `canManageMembers` 时渲染，因此无需再传「是否管理员」prop，只需新增 `csrfToken` 与 `onChanged`；路由权限仍为 `workspace:manage`）：新建与编辑复用与任务相同的规则字段，编辑带 `expectedVersion` 并处理 409，归档需二次确认。验证：浏览器走查新建模板、编辑模板、归档模板各一次，归档后该模板从 `GET /campaign-templates` 消失（服务端已过滤 `archived_at IS NULL`）。
 
-## 10. 全量验证与上线
+## 10. 采集设备列表可见性
 
-- [ ] 10.1 运行 `npm run check`，确认 format、lint、typecheck、单测与构建全绿。验证：命令退出码为 0。
-- [ ] 10.2 运行 `npm run test:mysql` 与 `npm run test:e2e`。验证：两条命令退出码为 0（需本机 Docker 与 Chrome）。
-- [ ] 10.3 运行 `openspec validate "admin-data-and-member-operations" --strict`。验证：输出 `Change 'admin-data-and-member-operations' is valid`。
-- [ ] 10.4 确认 `tighten-review-funnel` 的服务端部分已上线，再按 design.md 的 Migration Plan 依次执行迁移 → api 镜像 → web 镜像，沿用本地构建 + `docker save` tar 侧载流程与 `YYYYMMDD-N` 标签，切换前保留 `.previous-images.env` 与 infra 备份。验证：`/health/ready` 返回健康，迁移账号与业务账号未混用。
-- [ ] 10.5 上线后在真实工作区完成一次端到端走查：邀请 → 撤销 → 重新邀请 → 接受 → 改为只读 → 停用 → 启用 → 重新配对设备；并对若干候选执行批量复核、打标签、归档、恢复。验证：每步的审计记录都出现在审计页且 actor 为执行操作的管理员。
-- [ ] 10.6 确认本次未触碰 `packages/contracts`、采集器行为与 `COLLECTOR_MIN_VERSION`。验证：`git diff --stat packages/contracts apps/collector` 为空，v0.1.5 采集器仍可正常 claim 运行与同步。
+- [x] 10.1 在 `packages/domain/src/auth/directory.ts` 的 `listWorkspaceDevices`（:45）SELECT 补 `devices.revoked_at`（列已存在于 `0001_access.sql:90`，且已由 `devices.ts:264` 与 `sessions.ts:219` 写入），映射中返回 `revokedAt`。不新增查询参数、不改路由、不改权限。验证：`npm run test:mysql` 通过；集成测试断言主动撤销与停用级联两种路径下 `revokedAt` 均非空，且响应不含 `token_hash`。
+- [x] 10.2 在 `apps/web/src/pages/DevicesPage.tsx` 默认只渲染 `status === 'active'` 的设备，并提供「显示已撤销」开关；展开后已撤销行以只读形式显示撤销时间，**不**提供恢复、改名或删除入口。验证：浏览器走查——默认列表不含已撤销设备，打开开关后出现且无操作按钮，运营只能看到自己名下的设备。
+- [x] 10.3 撤销成功后把该设备从默认列表移除（无需刷新），并在开关旁说明「已撤销设备保留为历史，无法删除，成员需在本机重新配对」。验证：浏览器走查撤销一台设备后它立即从默认列表消失，开关展开仍可见。
+
+## 11. 文档同步
+
+- [ ] 11.1 更新 `docs/product-manual.md` 与 `docs/operations/operator-guide.md`：归档与恢复流程、「已归档」视图、批量复核与批量归档的操作方式与上限、标签的添加与筛选、筛选任务的编辑 / 复制 / 归档与「改条件只影响新运行」、以及「删除只能是软归档、采集事实字段不可编辑」的边界说明。验证：文档中的界面名称与 `apps/web/src/constants.ts` 的标签常量逐一对应，命令示例可完整复制且不含真实密码、Secret、Cookie、令牌或私钥。
+- [ ] 11.2 更新 `docs/operations/admin-guide.md`：成员停用 / 启用 / 改角色的效果与级联范围（停用会撤销全部会话与设备、启用不恢复设备）、邀请撤销、最后管理员护栏、护栏导致无法操作时用 `bootstrap-admin` CLI 救援的完整步骤、筛选模板的维护职责（新建 / 编辑 / 归档，仅管理员）、以及已撤销设备的默认隐藏与历史查看方式。明确写出「停用是账户级而非工作区级」。验证：救援步骤中的命令可完整复制，`npm run bootstrap-admin -w @douyin/domain` 的调用形式与实际脚本一致。
+- [ ] 11.3 更新 `docs/collector-windows.md` 与 `docs/collector-macos.md` 中关于设备撤销的描述（如有）：说明服务端已撤销设备在网页端默认隐藏、无法删除，重新配对需在本机进行。验证：`grep -rn "已撤销" docs` 的说法与实现一致。
+- [ ] 11.4 更新 `README.md` 中涉及成员管理、筛选任务或候选操作的描述（如有）。验证：`grep -n "只能邀请\|无法停用\|只能新建" README.md docs` 无遗留旧说法。
+
+## 12. 全量验证与上线
+
+- [ ] 12.1 运行 `npm run check`，确认 format、lint、typecheck、单测与构建全绿。验证：命令退出码为 0。
+- [ ] 12.2 运行 `npm run test:mysql` 与 `npm run test:e2e`。验证：两条命令退出码为 0（需本机 Docker 与 Chrome）。
+- [ ] 12.3 运行 `openspec validate "admin-data-and-member-operations" --strict`。验证：输出 `Change 'admin-data-and-member-operations' is valid`。
+- [ ] 12.4 确认 `tighten-review-funnel` 的服务端部分已上线，再按 design.md 的 Migration Plan 依次执行迁移 → api 镜像 → web 镜像，沿用本地构建 + `docker save` tar 侧载流程与 `YYYYMMDD-N` 标签，切换前保留 `.previous-images.env` 与 infra 备份。验证：`/health/ready` 返回健康，迁移账号与业务账号未混用。
+- [ ] 12.5 上线后在真实工作区完成一次端到端走查：邀请 → 撤销 → 重新邀请 → 接受 → 改为只读 → 停用 → 启用 → 重新配对设备；对若干候选执行批量复核、打标签、归档、恢复；编辑一个筛选任务并确认旧运行的规则快照未变；新建并归档一个模板；撤销一台设备并确认它从默认列表消失。验证：每步的审计记录都出现在审计页且 actor 为执行操作的管理员。
+- [ ] 12.6 确认本次未触碰 `packages/contracts`、采集器行为与 `COLLECTOR_MIN_VERSION`。验证：`git diff --stat packages/contracts apps/collector` 为空，v0.1.5 采集器仍可正常 claim 运行与同步。

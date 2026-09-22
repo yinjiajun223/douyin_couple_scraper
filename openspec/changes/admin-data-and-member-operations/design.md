@@ -8,8 +8,10 @@
 - `disableUserAccount`（`sessions.ts:195-238`）已完整实现（`FOR UPDATE` 锁 membership → 置 `users.status='disabled'` → 撤销全部 sessions → 撤销全部 devices → 写 `account.disabled` 审计 → 提交），但**从未挂上任何 HTTP 路由**。其审计写的是 `actorUserId: userId`（:224），即被停用者本人而非执行操作的管理员。
 - 没有 `enableUserAccount`。`memberships.role` 在整个代码库中**没有任何 UPDATE**。
 - `invitations.ts` 只有 `createInvitation`（:85）与 `acceptInvitation`（:118）；`invitations` 表（`0001_access.sql:40-58`）有 `expires_at` / `accepted_at`，**没有撤销标记列**。
-- `directory.ts` 只有两个只读查询（`listWorkspaceMembers` :25、`listWorkspaceDevices` :45）。
-- `MembersPage.tsx`（109 行）已展示 `member.status`（'使用中' / '已停用'），即停用状态早已被前端渲染，只是没有任何途径造成它。
+- `directory.ts` 只有两个只读查询（`listWorkspaceMembers` :25、`listWorkspaceDevices` :45）。后者已返回 `status: 'active' | 'revoked'` 并按 `ORDER BY devices.status, devices.updated_at DESC` 排序（已撤销排在后面），但**不返回** `devices.revoked_at`——该列存在（`0001_access.sql:90`）且确实被写入（`devices.ts:264` 主动撤销、`sessions.ts:219` 停用级联），只是从未 SELECT 出来。
+- 筛选任务与模板的后端**已完整**：`campaign-service.ts` 有 `updateCampaign`（:199）、`archiveCampaign`（:250）、`copyCampaign`（:150）、`createCampaignTemplate`（:99）、`updateCampaignTemplate`（:168）、`archiveCampaignTemplate`（:233），`createCampaign` 接受 `templateId`（refine：templateId 或 rules 二选一），乐观锁走 `expectedVersion` + `CampaignVersionConflictError`（:92）→ HTTP 409，审计写 `campaign.rules_updated`；路由 `PATCH /campaigns/:id`、`POST /campaigns/:id/archive`、`POST /campaigns/:id/copy` 用 `campaign:write`，四条 `/campaign-templates` 路由用 `workspace:manage`，`GET /campaigns` 用 `campaign:read` 且**已返回** `rules_json` / `version` / `status` / `source_template_id`（含已归档行），`listCampaignTemplates` 已过滤 `archived_at IS NULL`。**缺口全在前端**：`CampaignsPage.tsx` 只有硬编码默认值的新建表单，`TemplatesPage.tsx` 是纯只读列表（连 `csrfToken` prop 都没有），`OperationsDesk.tsx:74-79` 把 `/campaigns` 响应类型收窄成 `{ campaigns: CampaignSummary[] }`，丢弃了 `rules_json`。
+- 前端没有集中接口层：`apps/web/src/lib/api.ts` 不存在，页面直接 `fetch` + `readResponse`（`api/client.ts`，仅 7 行，把所有非 401 错误压成同一句文案）。
+- `MembersPage.tsx`（109 行）已展示 `member.status`（'使用中' / '已停用'），即停用状态早已被前端渲染，只是没有任何途径造成它。`DevicesPage.tsx` 已渲染「已撤销」标签与撤销流程（行内「确认撤销 / 取消」），但没有任何隐藏或过滤。
 
 **无需 DDL 的部分**（勘查确认，proposal 原先的猜测已被推翻）：
 - `audit_events.action` 是 `VARCHAR(100)` 且**无 CHECK 约束**（`0001_access.sql:108`）；`candidate_events.event_type` 同样是 `VARCHAR(100)` 无 CHECK（`0004:152`）。新增取值纯属 `AuditAction` 联合类型扩展。
@@ -29,12 +31,15 @@
 - 运营能批量处理复核队列，不必逐条点击。
 - 「删除」与「编辑」的边界由规格固定下来，不再反复被问。
 - 工作区永远不会因为管理员操作而失去最后一名管理员。
+- 让已存在的后端能力（任务编辑 / 归档 / 复制、模板维护、按模板预填）在界面上真正可用。
+- 已撤销设备不再污染默认设备列表，同时保留可追溯的历史。
 
 **Non-Goals:**
 - 不做物理删除（触发器层面不可能）。
 - 不做密码重置（用「停用 + 重新邀请」替代）。
 - 不启用 `workspace_roles` 自定义角色表（运行时从不读取，CHECK 只允许三个角色名）。
-- 不做工作区 CRUD、设备解吊销 / 改名 / 删除。
+- 不做工作区 CRUD、设备解吊销 / 改名 / 物理删除（已撤销设备只改为默认隐藏 + 只读历史）。
+- 不做采集器本机的「取消配对」（属 collector v0.1.6）。
 - 不拆分 `apps/api/src/server.ts`（见 D9）。
 - 不改动入库闸门、复核驱动流转、达人库分区轴 —— 那些属于 `tighten-review-funnel`。
 
@@ -120,6 +125,30 @@
 
 **为什么**：拆分是纯重构，会与所有在途变更争抢同一个文件，并使本次 diff 从「新增能力」变成「新增能力 + 全文件位移」，审阅成本与回归风险都放大。仓库近期的 `bc4024a refactor(web): split App.tsx into modules` 正是把拆分作为独立 change 处理的先例。
 
+### D10: 筛选任务与模板只补界面，后端一行不改
+
+`campaign-service.ts` 与 `server.ts` 的六条写路由、乐观锁、审计与 `screening-campaigns` 主 specs 的要求都已就位，本 change 对它们**零改动**。要补的是：
+
+- `types.ts`：`CampaignSummary` 增加 `rules` / `source_template_id`，`OperationsDesk.tsx` 不再丢弃 `GET /campaigns` 已返回的 `rules_json`。
+- `CampaignsPage.tsx`：把现有新建表单改为**新建 / 编辑共用**，编辑时用 `rules` 预填（不再用硬编码 `defaultValue`），提交带 `expectedVersion`；卡片补「编辑」「复制」「归档」入口，已归档卡片只保留「复制」。
+- 409 处理：`readResponse` 目前吞掉状态码，改为在提交处直接读 `response.status === 409`，提示「该任务已被他人修改，请刷新后重试」并重新拉取 `/campaigns`，**不做自动合并**。
+- `TemplatesPage.tsx`：补新建 / 编辑 / 归档（需要 `csrfToken` 与 `canManageTemplates` prop）。
+- 新建任务时的「从模板预填」：优先发送 `templateId` 让服务端展开（`createCampaign` 的 refine 支持二选一），而不是前端把模板规则复制进表单——服务端展开才能保证 `source_template_id` 被正确记录。
+
+**为什么模板下拉要做成 best-effort**：`GET /campaign-templates` 是 `workspace:manage`，运营（operator）调用会 403。运营仍需能新建任务，因此下拉失败时静默隐藏该控件并回落到手填规则，不报错、不阻断表单。管理员则两者都可用。
+
+**代价**：运营无法看到模板内容，只能手填。可接受——模板维护本就是管理员职责（`TemplatesPage` 文案已如此描述），且运营可以复制管理员建好的任务再改。
+
+### D11: 已撤销设备在前端过滤，不加服务端查询参数
+
+`GET /devices` 保持原样返回全部设备，`DevicesPage.tsx` 默认 `status === 'active'`，「显示已撤销」开关打开后追加展示已撤销行（只读，含撤销时间）。domain 侧唯一改动是 `listWorkspaceDevices` 的 SELECT 补 `devices.revoked_at` 并在映射中返回 `revokedAt`。
+
+**为什么不加服务端参数**：设备数量是「一个运营一两台」的量级，永远只有几十行；为几十行数据加查询参数、zod 校验和集成测试不成比例。行级可见范围（管理员见全部、非管理员见自己名下）仍由既有 SQL 施加，前端过滤只影响展示，不构成越权面。
+
+**为什么不做物理删除**：`devices` 被采集观测记录外键引用（`ON DELETE RESTRICT`），删除会破坏「哪台机器在什么时候采到了这条数据」的证据链。用户的诉求（「撤销的没办法删除」）本质是列表噪声，用隐藏解决即可。
+
+**代价**：已撤销设备仍占用数据库行，无法清理。可接受且不可逆改。
+
 ## Risks / Trade-offs
 
 **[归档后达人的截图被 `tighten-review-funnel` 的孤儿回收误删]** → 不会：孤儿判据是「`media_objects.creator_observation_id` 找不到对应 `campaign_candidates` 行」，归档行仍然存在。两个 change 都实施后需专门加一条断言覆盖这一点（见 tasks）。
@@ -134,7 +163,11 @@
 
 **[停用是全局的而非按工作区]** → `users.status` 不在 `memberships` 上，停用会影响该用户在**所有**工作区的状态。当前只有一个 seed 工作区，因此无实际差异；但规格与文档 MUST NOT 声称这是「工作区内停用」，多工作区启用前需重新设计。
 
-**[`server.ts` 继续膨胀]** → D9 接受这一代价并记录为后续变更；本次新增约 8 条路由。
+**[`server.ts` 继续膨胀]** → D9 接受这一代价并记录为后续变更；本次新增约 8 条路由（筛选任务与模板的六条已存在，不新增）。
+
+**[运营误以为改任务条件会改变旧结论]** → 主 specs 的「运行规则快照」要求每次运行开始时冻结不可变快照，编辑只影响新运行。编辑表单保存成功后需明确提示这一点（`campaign_rule_versions` 已冻结的历史不变），否则「改了上限为什么老候选还在」会被当 bug 上报。
+
+**[隐藏已撤销设备掩盖了「成员需重新配对」这一待办]** → 已撤销设备的成因主要是停用级联（`sessions.ts:219`），启用后本就要求本人重新配对（D6）。默认隐藏后管理员可能忘记某成员设备已失效；缓解：成员行的「已停用」状态仍在成员页可见，且设备页的开关随时可展开历史。
 
 **[运营误用批量归档]** → 归档可恢复（D1）、逐条写审计与事件历史、二次确认；不提供任何不可逆的批量删除。
 
@@ -145,8 +178,8 @@
 **上线顺序**（每步独立可回滚）：
 
 1. **迁移**：按既有流程用迁移账号执行（API/worker 不使用迁移账号）。可逆性：新增可空列，旧代码忽略它。
-2. **服务端**：发布 api 镜像（新路由 + 达人库归档过滤 + 批量操作 + 标签写入 + 成员生命周期）。可逆性：回滚镜像即可；已写入的 `archived_at` 与 `revoked_at` 对旧代码不可见但无害，已写入的审计与事件行受触发器保护、不可也不需要回滚。
-3. **前端**：发布 web 镜像。可逆性：回滚即恢复只读成员页与单条操作。
+2. **服务端**：发布 api 镜像（新路由 + 达人库归档过滤 + 批量操作 + 标签写入 + 成员生命周期 + `listWorkspaceDevices` 返回 `revokedAt`）。可逆性：回滚镜像即可；已写入的 `archived_at` 与 `revoked_at` 对旧代码不可见但无害，已写入的审计与事件行受触发器保护、不可也不需要回滚。`revokedAt` 是响应新增字段，旧 web 镜像忽略它。
+3. **前端**：发布 web 镜像（成员管理 + 任务编辑/归档/复制 + 模板维护 + 设备默认过滤）。可逆性：回滚即恢复只读成员页、只能新建任务的筛选任务页与混排的设备列表。
 4. **worker**：本次无 worker 改动，不需重发。
 
 **部署机制**：沿用既有本地构建 + `docker save` tar 侧载流程（生产主机无法访问 Docker Hub），标签按 `YYYYMMDD-N`，切换前保留 `.previous-images.env` 与 infra 备份。
