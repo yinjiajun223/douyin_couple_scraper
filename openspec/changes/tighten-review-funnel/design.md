@@ -62,6 +62,8 @@
 
 **风险**：重算需要代码路径支持，若从未实现，「可重算」就只是理论能力。→ 缓解：把重算入口作为一个明确的实现任务落地（哪怕只暴露为管理员诊断能力），而不是仅在文档里声称。
 
+**`postsWindowComplete` 没有持久化，重算时按「窗口不完整」处理**：`evaluateHardFilters` 在规则未命中时用 `postsWindowComplete === false` 把 `fail` 放宽为 `unknown`（`hard-filter.ts:100`），而该字段只是批次契约里的可选项（`packages/contracts/src/collector.ts:44`），`creator_observations` 没有对应列，无法原样读回。重算固定传 `postsWindowComplete: false`，这与两条真实入库路径都一致：采集器对每条观测都硬编码该值（`apps/collector/src/runtime.ts:484` —— 它只滚动一个 feed 窗口，结构上无法知道达人的完整作品史），旧数据导入则完全没有作品数据（`legacy-import.ts:140` 的 `posts: []`）；后者原本靠 `preserveMissingLegacyPostEvidence` 事后把作品规则回写成 `unknown`，该函数已随闸门删除，改由这个固定值在重算侧得到同一结论。**因此不需要迁移，也不需要新增列**：把「窗口不完整」当作恒真前提，重算结论与生产入库时的结论逐条一致；缺失的粉丝数、点赞数与发布时间仍按 NULL 传导为 `unknown`，不会被填成 0。
+
 **备选**：写 `hard_filter_status = 'fail'` + `archived_at = now()` 的隐藏候选行 —— 被否，理由同上，且会与 D1 的「已存在则更新」逻辑纠缠（隐藏行会被后续运行命中并更新，语义更混乱）。
 
 ### D3: 层 1 事实账本完全不门控
@@ -72,7 +74,7 @@
 
 **备选**：只写 `creators` 不写 observations —— 被否，去重需要 `creators`，但可追溯性与重算需要 observations；拆开写会同时丢掉两者的一半价值。
 
-**同一闸门也作用于旧数据导入**：`legacy-import.ts` 走的是同一条入库路径，且旧导出只有主页字段（`posts: []`），硬筛结论恒为「数据未知」，因此导入后不再产生任何候选记录，其 `progress_json.candidatesFound` 也据实记为 0。事实账本、作者主档与来源关系照旧完整写入，判定依据可由 D2 的重算能力查看。随之失效的 `preserveMissingLegacyPostEvidence`（往 `rule_evaluations` 与 `campaign_candidates` 回写 unknown 标记）已删除：闸门后这两张表对旧导入恒无行可写。
+**同一闸门也作用于旧数据导入**：`legacy-import.ts` 走的是同一条入库路径，且旧导出只有主页字段（`posts: []`）；缺少作品证据使硬筛不可能通过（作品规则按「数据未知」处理，粉丝数已知且越界时为「未通过」），因此导入后不再产生任何候选记录，其 `progress_json.candidatesFound` 也据实记为 0。事实账本、作者主档与来源关系照旧完整写入，判定依据可由 D2 的重算能力查看。随之失效的 `preserveMissingLegacyPostEvidence`（往 `rule_evaluations` 与 `campaign_candidates` 回写 unknown 标记）已删除：闸门后这两张表对旧导入恒无行可写。
 
 **代价**：旧数据导入从「填充达人库」变成「只填充事实账本」。这是刻意的 —— 导入的达人都缺少作品数据，即使入库也必然卡在人工复核，正是本次要消除的成本来源。
 
@@ -178,4 +180,5 @@
 - **孤儿回收宽限期 = 7 天**，经环境变量可调（与既有 `MEDIA_RETENTION_DAYS`、`MEDIA_CLEANUP_BATCH_SIZE` 同一配置风格）。7 天远长于「素材确认 → 候选行建立」的正常间隔，首次上线取保守值。
 - **达人库分区 = 5 个**（待复核 / 待联系 / 跟进中 / 已合作 / 不合适），不拆成 7 个 pipeline 值各一个 tab。spec 写为「至少五个分区」，后续如需细分属纯 UI 调整。
 - **历史非通过数据不提供默认界面入口**，仅保留服务端 `hardFilterStatus` 查询参数，且仍受同一套记录级可见范围约束。运营确有需求时再单独提变更。
-- **D2 的重算入口暴露为运行详情内的运营可见能力**，不是仅内部函数。理由：`screening-campaigns` 的「追溯未入库达人的判定依据」场景要求*成员*能解释某达人为何未进复核队列，而未入库达人没有候选行，无法从达人库导航到达。实现为 `GET /runs/:runId/observed-creators`（只读，可见范围继承既有运行归属校验）+ `RunsPage` 详情面板；底层重算逻辑放在 `@douyin/domain`，与该接口共用同一实现，避免「文档声称可重算但无代码路径」。
+- **D2 的重算入口暴露为运行详情内的运营可见能力**，不是仅内部函数。理由：`screening-campaigns` 的「追溯未入库达人的判定依据」场景要求*成员*能解释某达人为何未进复核队列，而未入库达人没有候选行，无法从达人库导航到达。实现为 `GET /runs/:runId/observed-creators`（只读）+ `RunsPage` 详情面板；底层重算逻辑放在 `@douyin/domain`，与该接口共用同一实现，避免「文档声称可重算但无代码路径」。
+- **该接口的可见范围是工作区级 `campaign:read`，不是设备归属级**。实施前核对发现 `assertRunOwnership`（`collector-ingestion.ts:143-164`）是**设备侧**校验（`JOIN run_devices ON device_id = ?` 且要求 `status = 'running'`），只在采集器带设备令牌上报时适用，浏览器路由无法复用；而既有的 `GET /runs`（`server.ts:1011-1026`）与三个 `/runs/:runId/{pause,resume,terminate}`（:1126-1166）一律只按 `principal.workspaceId` 过滤，没有「运营只能看自己名下设备的运行」这条规则。若新接口反而收窄，运营会在能打开的运行详情里看到一个 404 的面板，比不显示更糟。跨工作区访问由「按 workspaceId 查不到」自然降级为 `COLLECTION_RUN_NOT_FOUND`（404），与「运行不存在」同一响应，不泄露存在性。
