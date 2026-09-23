@@ -1,3 +1,5 @@
+import type { AuditAction, AuditSubjectType } from './types';
+
 export const DEFAULT_WORKSPACE_ID =
   import.meta.env.VITE_WORKSPACE_ID ?? '00000000-0000-4000-8000-000000000001';
 
@@ -66,3 +68,43 @@ export const memberRoleOptions = [
 export const EVIDENCE_ZOOM_MIN = 1;
 export const EVIDENCE_ZOOM_MAX = 4;
 export const EVIDENCE_ZOOM_STEP = 0.25;
+
+// Record<AuditAction, string> 是刻意的：新增一个审计动作而忘记配标签会直接编译不过。
+export const auditActionLabels: Record<AuditAction, string> = {
+  'account.bootstrap_admin': '初始化管理员',
+  'account.invitation_created': '发出成员邀请',
+  'account.invitation_accepted': '接受成员邀请',
+  'account.invitation_revoked': '撤销成员邀请',
+  'account.disabled': '停用成员',
+  'account.enabled': '启用成员',
+  'account.role_changed': '变更成员角色',
+  'campaign.rules_updated': '更新筛选任务',
+  'campaign.run_created': '创建采集运行',
+  'campaign.run_status_changed': '采集运行状态变更',
+  'device.pairing_code_created': '生成设备配对码',
+  'device.paired': '配对采集设备',
+  'device.token_rotated': '轮换设备令牌',
+  'device.revoked': '撤销采集设备',
+  'candidate.reviewed': '人工复核候选',
+  'candidate.archived': '归档候选',
+  'candidate.unarchived': '恢复候选',
+  'candidate.tags_changed': '更新候选标签',
+  'outreach.status_changed': '更新跟进记录',
+  'export.created': '导出候选数据',
+};
+
+export const auditSubjectLabels: Record<AuditSubjectType, string> = {
+  campaign: '筛选任务',
+  candidate: '候选达人',
+  candidate_export: '候选导出',
+  collection_run: '采集运行',
+  device: '采集设备',
+  device_pairing_code: '设备配对码',
+  invitation: '成员邀请',
+  user: '成员',
+};
+
+// 界面上永远显示中文：遇到尚未收录的取值也只用这两个兜底文案，
+// 原始英文键只放进 title 供排查时复制，不作为可见文本。
+export const AUDIT_FALLBACK_ACTION_LABEL = '其他操作';
+export const AUDIT_FALLBACK_SUBJECT_LABEL = '其他对象';

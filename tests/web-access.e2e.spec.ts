@@ -525,6 +525,53 @@ test('采集设备默认只列在用设备，已撤销设备作为只读历史�
   await expect(page.getByText('已撤销电脑')).toHaveCount(0);
 });
 
+test('审计记录显示中文动作与对象，未收录的取值也不露出英文键', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.unroute('**/audit-events');
+  const event = (id: string, action: string, subjectType: string) => ({
+    id,
+    action,
+    subjectType,
+    actorUserId: 'admin-user',
+    createdAt: '2026-09-22T08:00:00.000Z',
+  });
+  await page.route('**/audit-events', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      json: {
+        events: [
+          event('audit-tags', 'candidate.tags_changed', 'candidate'),
+          event('audit-archived', 'candidate.archived', 'candidate'),
+          event('audit-unarchived', 'candidate.unarchived', 'candidate'),
+          event('audit-role', 'account.role_changed', 'user'),
+          event('audit-enabled', 'account.enabled', 'user'),
+          event('audit-invite', 'account.invitation_revoked', 'invitation'),
+          event('audit-unknown', 'candidate.future_action', 'candidate'),
+        ],
+      },
+    }),
+  );
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '审计记录' }).click();
+  for (const label of [
+    '更新候选标签',
+    '归档候选',
+    '恢复候选',
+    '变更成员角色',
+    '启用成员',
+    '撤销成员邀请',
+    '成员邀请',
+  ]) {
+    await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
+  }
+  // 未收录的动作走中文兜底；原始英文键只允许出现在 title 属性里，不作为可见文本。
+  await expect(page.getByText('其他操作', { exact: true })).toBeVisible();
+  await expect(page.getByText('candidate.future_action')).toHaveCount(0);
+  await expect(page.getByText('candidate.tags_changed')).toHaveCount(0);
+  await expect(page.locator('[title="candidate.future_action"]')).toHaveCount(1);
+});
+
 test('运营可配置硬筛规则与停止条件，保存后立即回显', async ({ page }) => {
   await mockAuthenticatedWorkspace(page, 'operator');
   let submittedCampaign: Record<string, unknown> | undefined;

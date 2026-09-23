@@ -199,6 +199,40 @@ export interface CampaignTemplateSummary {
   version: number;
 }
 
+// 与 `packages/domain/src/audit/audit-events.ts` 的 AuditAction 保持一致；
+// 这里单独声明而不是跨包导入，因为 web 不能依赖服务端领域包。
+export type AuditAction =
+  | 'account.bootstrap_admin'
+  | 'account.invitation_created'
+  | 'account.invitation_accepted'
+  | 'account.invitation_revoked'
+  | 'account.disabled'
+  | 'account.enabled'
+  | 'account.role_changed'
+  | 'campaign.rules_updated'
+  | 'campaign.run_created'
+  | 'campaign.run_status_changed'
+  | 'device.pairing_code_created'
+  | 'device.paired'
+  | 'device.token_rotated'
+  | 'device.revoked'
+  | 'candidate.reviewed'
+  | 'candidate.archived'
+  | 'candidate.unarchived'
+  | 'candidate.tags_changed'
+  | 'outreach.status_changed'
+  | 'export.created';
+
+export type AuditSubjectType =
+  | 'campaign'
+  | 'candidate'
+  | 'candidate_export'
+  | 'collection_run'
+  | 'device'
+  | 'device_pairing_code'
+  | 'invitation'
+  | 'user';
+
 export interface AuditEventSummary {
   id: string;
   action: string;
