@@ -9,6 +9,7 @@
 - 团队登录、邀请、角色与设备授权。
 - 筛选任务、不可变规则快照和受控停止条件。
 - Windows/macOS 本机独立抖音画像、人工登录和人工开始。
+- 单次运行最长 1,440 分钟；服务异常、网络错误等暂时性页面故障采用有界退避恢复，验证码、登录失效和明确平台限制仍安全暂停。
 - 达人、作品、观察历史、硬筛证据和私有截图；只有全部硬筛通过的达人才入库成为候选并采集截图，未入库达人的判定依据仍可在运行详情中查看。
 - 人工复核、负责人分配、联系信息与合作阶段；复核结论自动推进合作阶段，达人库按合作阶段分区。
 - 审计记录、生产健康检查、备份恢复和发布回滚。
@@ -23,6 +24,8 @@
 - Windows/macOS 采集助手：可见 Chrome、独立画像、本地持久队列，以及 DPAPI/Keychain 设备令牌。
 
 采集必须由本机用户明确开始或继续。服务器创建运行、刷新页面或重启助手都不会远程操作抖音。
+
+长运行并不等于绕过平台限制或无人值守守护：电脑和助手进程必须保持运行且系统不得休眠；自动恢复仅维持当前已人工开始的运行，不会处理验证码、自动启动下一运行或保证任何平台状态下绝对连续 24 小时。本机控制页会显示恢复类别、阶段、次数、下次尝试时间和结果，脱敏恢复日志保存在共享 `data/diagnostics` 目录并限制为 3 个文件。
 
 ## 文档入口
 
@@ -84,13 +87,13 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.4 `
+  -Version 0.1.6 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.4.zip
+  -PackagePath artifacts/collector-windows-v0.1.6.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
@@ -101,13 +104,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```bash
 bash scripts/build-collector-macos.sh \
-  --version 0.1.4 \
+  --version 0.1.6 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
 
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.4.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.6.tar.gz'
 ```
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。

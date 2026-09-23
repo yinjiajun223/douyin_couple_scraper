@@ -1,4 +1,6 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -20,6 +22,255 @@ afterEach(async () => {
 });
 
 describe('本地采集运行设置', () => {
+  it('把 v0.1.5 旧检查点恢复为 idle 且保留进度、待同步批次和低可信度数据', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-runtime-legacy-checkpoint-'));
+    temporaryDirectories.push(dataRoot);
+    const runId = '00000000-0000-4000-8000-000000000005';
+    const runsDirectory = path.join(dataRoot, 'runs');
+    const checkpointPath = path.join(
+      runsDirectory,
+      `${createHash('sha256').update(runId).digest('hex')}.json`,
+    );
+    const pendingBatch = {
+      protocolVersion: '1.0.0',
+      collectorVersion: '0.1.5',
+      parserVersion: '0.1.0',
+      deviceId: '71000000-0000-4000-8000-000000000012',
+      runId,
+      idempotencyKey: 'legacy-checkpoint-batch',
+      observations: [
+        {
+          observationId: '71000000-0000-4000-8000-000000000013',
+          platform: 'douyin',
+          platformCreatorId: 'legacy-creator',
+          profileUrl: 'https://www.douyin.com/user/legacy-creator',
+          nickname: '旧检查点样例',
+          biography: null,
+          followerCount: 1200,
+          followerCountRaw: '1200',
+          observedAt: '2026-09-15T00:00:00.000Z',
+          posts: [],
+          parserConfidence: 0.9,
+        },
+      ],
+    };
+    await mkdir(runsDirectory, { recursive: true });
+    await writeFile(
+      checkpointPath,
+      JSON.stringify({
+        runId,
+        profileId: 'profile-legacy',
+        progress: {
+          candidatesFound: 3,
+          creatorProfilesSeen: 28,
+          elapsedSeconds: 600,
+          feedItemsSeen: 31,
+        },
+        seenPosts: ['legacy-post'],
+        seenCreators: ['https://www.douyin.com/user/legacy-seen'],
+        pendingBatch,
+        screenshot: 'bGVnYWN5LWV2aWRlbmNl',
+        message: '旧版待同步',
+        lowConfidence: {
+          consecutiveFailures: 2,
+          lastIssue: {
+            detectedAt: '2026-09-15T00:01:00.000Z',
+            missingFields: ['粉丝数'],
+            parserConfidence: 0.5,
+            profileUrl: 'https://www.douyin.com/user/legacy-low-confidence',
+          },
+          skippedTotal: 4,
+        },
+      }),
+      'utf8',
+    );
+    const runtime = new CollectorRuntime({
+      apiClient: {} as never,
+      profileStore: { dataRoot } as never,
+      uploadScreenshot: async () => undefined,
+    });
+
+    await runtime.restore();
+
+    await expect(runtime.status()).resolves.toMatchObject({
+      message: '旧版待同步',
+      pendingEvidence: true,
+      recovery: {
+        attemptCount: 0,
+        circuitBreakerCount: 0,
+        lastResult: 'idle',
+        stage: 'idle',
+      },
+    });
+    expect(runtime.decorateRuns([{ id: runId, status: 'paused' }])).toMatchObject([
+      {
+        lowConfidenceDiagnostics: { consecutiveFailures: 2, skippedTotal: 4 },
+        progress: {
+          candidatesFound: 3,
+          creatorProfilesSeen: 28,
+          elapsedSeconds: 600,
+          feedItemsSeen: 31,
+        },
+      },
+    ]);
+    expect(() => runtime.assertIdle()).toThrow('待同步证据');
+  });
+
+  it('作者页首次出现服务异常后自动恢复并只同步一次', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-runtime-service-recovery-'));
+    temporaryDirectories.push(dataRoot);
+    const runId = '00000000-0000-4000-8000-000000000004';
+    const rules = createDefaultCampaignRuleSet();
+    const unavailableHtml = readFileSync(
+      new URL('./fixtures/service-unavailable.html', import.meta.url),
+      'utf8',
+    );
+    const profileUrl = 'https://www.douyin.com/user/creator-service-recovery';
+    const profileHtml = `<!doctype html>
+      <html lang="zh-CN">
+        <head><title>恢复样例的抖音主页</title></head>
+        <body>
+          <h1 data-e2e="user-title">恢复样例</h1>
+          <span data-e2e="user-info-fans">粉丝 1200</span>
+          <article data-e2e="user-post-item">
+            <a href="/video/7700000000000000004">公开作品</a>
+            <span data-e2e="video-like-count">1.2万</span>
+            <time datetime="${new Date(Date.now() - 86_400_000).toISOString()}"></time>
+          </article>
+        </body>
+      </html>`;
+    const feedHtml = `<article>
+      <a href="/video/7700000000000000004" aria-label="恢复样例的作品">作品</a>
+      <a href="/user/creator-service-recovery">恢复样例</a>
+      <span data-e2e="video-like-count">1.2万</span>
+    </article>`;
+    const feedPage = {
+      bringToFront: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue({ moved: false, target: 'document' }),
+      goto: vi.fn().mockResolvedValue(undefined),
+      isClosed: () => false,
+      locator: (selector: string) =>
+        selector === 'body'
+          ? { innerText: async () => '抖音推荐流正常页面' }
+          : { evaluateAll: async () => feedHtml },
+      mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      reload: vi.fn().mockResolvedValue(undefined),
+      title: async () => '抖音精选',
+      url: () => 'https://www.douyin.com/',
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    };
+    let profileNavigationCount = 0;
+    const profilePage = {
+      bringToFront: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      content: vi
+        .fn()
+        .mockImplementation(async () =>
+          profileNavigationCount === 1 ? unavailableHtml : profileHtml,
+        ),
+      goto: vi.fn().mockImplementation(async () => {
+        profileNavigationCount += 1;
+        return { status: () => (profileNavigationCount === 1 ? 503 : 200) };
+      }),
+      isClosed: () => false,
+      locator: () => ({
+        innerText: async () =>
+          profileNavigationCount === 1
+            ? '服务异常，重新刷新获取数据'
+            : '恢复样例 粉丝 1200 公开作品',
+      }),
+      off: vi.fn(),
+      on: vi.fn(),
+      reload: vi.fn().mockImplementation(async () => {
+        profileNavigationCount += 1;
+        return { status: () => 200 };
+      }),
+      screenshot: vi.fn().mockResolvedValue(Buffer.from('恢复后的合格证据')),
+      title: async () => (profileNavigationCount === 1 ? '抖音' : '恢复样例的抖音主页'),
+      url: () => profileUrl,
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    };
+    const browserContext = {
+      close: vi.fn().mockResolvedValue(undefined),
+      newPage: vi.fn().mockResolvedValue(profilePage),
+      on: vi.fn(),
+      once: vi.fn(),
+      pages: () => [feedPage],
+    };
+    let remoteStatus = 'ready';
+    let progressReports = 0;
+    const changeRunStatus = vi.fn().mockImplementation(async (_id: string, action: string) => {
+      remoteStatus = action === 'resume' ? 'running' : action;
+      return { id: runId, status: remoteStatus };
+    });
+    const sendBatch = vi.fn().mockImplementation(async (batch: CollectorBatch) => ({
+      duplicateBatch: false,
+      idempotencyKey: batch.idempotencyKey,
+      results: batch.observations.map((observation) => ({
+        observationId: observation.observationId,
+        status: 'accepted' as const,
+      })),
+    }));
+    const runtime = new CollectorRuntime({
+      apiClient: {
+        changeRunStatus,
+        getDevice: vi.fn().mockResolvedValue({
+          deviceId: '71000000-0000-4000-8000-000000000011',
+          name: '测试设备',
+        }),
+        reportProgress: vi.fn().mockImplementation(async () => {
+          progressReports += 1;
+          if (progressReports > 1) remoteStatus = 'completed';
+          return { id: runId, status: remoteStatus };
+        }),
+        sendBatch,
+        startRun: vi.fn().mockImplementation(async () => {
+          remoteStatus = 'running';
+          return { id: runId, status: remoteStatus };
+        }),
+        syncRuns: vi.fn().mockImplementation(async () => [
+          {
+            id: runId,
+            progress: {
+              candidatesFound: 0,
+              creatorProfilesSeen: 0,
+              elapsedSeconds: 0,
+              feedItemsSeen: 0,
+            },
+            rules,
+            status: remoteStatus,
+          },
+        ]),
+      },
+      launchProfile: vi.fn().mockResolvedValue(browserContext) as never,
+      profileStore: {
+        dataRoot,
+        getSelectedProfile: vi.fn().mockResolvedValue({ id: 'profile-1', label: '校园圈层' }),
+      } as never,
+      random: () => 0,
+      uploadScreenshot: vi.fn().mockResolvedValue(undefined),
+      wait: async () => undefined,
+    });
+    await runtime.configureLowConfidencePolicy({ mode: 'never_pause' });
+
+    await runtime.start(runId);
+    await vi.waitFor(() => expect(runtime.status()).resolves.toMatchObject({ activeRunId: null }));
+
+    expect(changeRunStatus).not.toHaveBeenCalledWith(runId, 'pause');
+    expect(sendBatch).toHaveBeenCalledOnce();
+    expect(profilePage.goto).toHaveBeenCalledTimes(2);
+    expect(sendBatch.mock.calls[0]?.[0].observations).toHaveLength(1);
+    expect(runtime.decorateRuns([{ id: runId, status: 'completed' }])).toMatchObject([
+      {
+        progress: {
+          candidatesFound: 1,
+          creatorProfilesSeen: 1,
+          feedItemsSeen: 1,
+        },
+      },
+    ]);
+  });
+
   it('默认永不因低可信度暂停，并持久保存用户选择', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-runtime-settings-'));
     temporaryDirectories.push(dataRoot);

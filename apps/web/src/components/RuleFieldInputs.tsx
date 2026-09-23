@@ -68,11 +68,14 @@ export function StopConditionInputs({ defaults }: { defaults: RuleFieldDefaults 
       <label>
         最长运行分钟
         <input
+          aria-describedby="max-duration-help"
           defaultValue={defaults.maxDurationMinutes}
+          max="1440"
           min="1"
           name="maxDurationMinutes"
           type="number"
         />
+        <small id="max-duration-help">最多 1,440 分钟（24 小时）。</small>
       </label>
       <label>
         目标候选数
@@ -83,6 +86,10 @@ export function StopConditionInputs({ defaults }: { defaults: RuleFieldDefaults 
           type="number"
         />
       </label>
+      <p className="wide-field" role="note">
+        多个停止条件是“任一先到即停止”。如需尽量按时间跑满 24
+        小时，请清空会更早触发的非必需作品数、作者数或候选数条件。
+      </p>
       <label className="wide-field">
         人工复核项（可选）
         <input

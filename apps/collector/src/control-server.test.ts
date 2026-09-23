@@ -28,6 +28,93 @@ afterEach(async () => {
 });
 
 describe('本地控制页中心 API 客户端', () => {
+  it('控制状态返回恢复摘要且控制页兼容恢复中、已恢复、熔断与旧字段缺失', async () => {
+    const recoveryRuns = [
+      {
+        id: 'run-recovering',
+        recoveryDiagnostics: {
+          attemptCount: 1,
+          issueCode: 'transient_page_failure',
+          lastResult: 'waiting',
+          nextAttemptAt: '2026-09-23T01:00:15.000Z',
+          pageType: 'profile',
+          stage: 'reload_page',
+        },
+        status: 'running',
+      },
+      {
+        id: 'run-recovered',
+        recoveryDiagnostics: {
+          attemptCount: 2,
+          issueCode: 'transient_page_failure',
+          lastResult: 'recovered',
+          nextAttemptAt: null,
+          pageType: 'profile',
+          stage: 'recreate_profile_page',
+        },
+        status: 'completed',
+      },
+      {
+        id: 'run-circuit-open',
+        recoveryDiagnostics: {
+          attemptCount: 3,
+          issueCode: 'transient_page_failure',
+          lastResult: 'exhausted',
+          nextAttemptAt: null,
+          pageType: 'feed',
+          stage: 'circuit_open',
+        },
+        status: 'paused',
+      },
+      { id: 'run-legacy', status: 'ready' },
+    ];
+    const runtimeStatus = {
+      activeRunId: 'run-recovering',
+      busy: false,
+      recovery: recoveryRuns[0]?.recoveryDiagnostics,
+    };
+    const server = createCollectorControlServer({
+      apiClient: {
+        getDevice: vi.fn().mockResolvedValue({ deviceId: 'device-1', name: '恢复测试设备' }),
+        syncRuns: vi.fn().mockResolvedValue(recoveryRuns),
+      } as unknown as CollectorControlApiClient,
+      profileStore: {
+        getSelectedProfile: vi.fn().mockResolvedValue({ id: 'profile-1' }),
+        listProfiles: vi.fn().mockResolvedValue([{ id: 'profile-1', label: '恢复测试画像' }]),
+      } as never,
+      runtime: {
+        decorateRuns: vi.fn().mockReturnValue(recoveryRuns),
+        restore: vi.fn().mockResolvedValue(undefined),
+        status: vi.fn().mockResolvedValue(runtimeStatus),
+      } as never,
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('测试服务未监听 TCP 端口。');
+      const response = await fetch(`http://127.0.0.1:${address.port}/control/api/state`);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        runs: recoveryRuns,
+        runtime: runtimeStatus,
+      });
+      expect(COLLECTOR_CONTROL_HTML).toContain('恢复诊断：');
+      expect(COLLECTOR_CONTROL_HTML).toContain("reload_page:'重新加载当前页'");
+      expect(COLLECTOR_CONTROL_HTML).toContain("recovered:'已恢复'");
+      expect(COLLECTOR_CONTROL_HTML).toContain("circuit_open:'恢复熔断'");
+      expect(COLLECTOR_CONTROL_HTML).toContain('const recovery = run.recoveryDiagnostics || {}');
+      expect(COLLECTOR_CONTROL_HTML).toContain('data-action="pause"');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it('保存低可信度策略到本机运行时', async () => {
     const configureLowConfidencePolicy = vi.fn().mockResolvedValue({ mode: 'never_pause' });
     const server = createCollectorControlServer({
@@ -135,7 +222,7 @@ describe('本地控制页中心 API 客户端', () => {
     expect(requests).toEqual([{ method: 'GET', url: 'https://ops.example.test/collector/runs' }]);
     expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
       'x-collector-protocol-version': '1.0.0',
-      'x-collector-version': '0.1.5',
+      'x-collector-version': '0.1.6',
       'x-parser-version': '0.5.0',
     });
 

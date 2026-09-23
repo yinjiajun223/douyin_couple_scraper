@@ -6,11 +6,15 @@ on:
       version:
         description: Collector version from apps/collector/package.json
         required: true
-        default: 0.1.5
+        default: 0.1.6
       api_base_url:
         description: Production HTTPS API base URL embedded in the packages
         required: true
         default: https://106.12.56.109
+      include_macos:
+        description: Also build and publish macOS after both architecture smoke tests
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -55,6 +59,7 @@ jobs:
           if-no-files-found: error
 
   macos_intel:
+    if: ${{ inputs.include_macos }}
     name: macOS universal package and Intel smoke test
     runs-on: macos-15-intel
     steps:
@@ -84,6 +89,7 @@ jobs:
           if-no-files-found: error
 
   macos_arm64:
+    if: ${{ inputs.include_macos }}
     name: macOS Apple Silicon smoke test
     needs: macos_intel
     runs-on: macos-15
@@ -100,6 +106,7 @@ jobs:
 
   publish:
     name: Publish durable release assets
+    if: ${{ always() && needs.windows.result == 'success' && (!inputs.include_macos || (needs.macos_intel.result == 'success' && needs.macos_arm64.result == 'success')) }}
     needs:
       - windows
       - macos_intel
@@ -107,6 +114,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
+      INCLUDE_MACOS: ${{ inputs.include_macos }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -119,15 +127,21 @@ jobs:
           set -euo pipefail
           tag='collector-v${{ inputs.version }}'
           cat >release-notes.md <<'EOF'
-          Windows and macOS collector packages with bundled Node.js and production connection settings.
+          Windows collector package with bundled Node.js and production connection settings.
+
+          This update adds bounded recovery for transient page failures, local recovery diagnostics, and a fix for hidden verification-script false positives. Login expiry, CAPTCHA, and explicit platform restrictions still pause for manual handling. Only hard-filter-passing creators produce uploaded screenshots.
 
           Automated release gates:
           - Windows package build, DPAPI, persistent profile, visible Chrome, and local control page smoke test
-          - macOS universal package build and Intel Keychain/profile/visible Chrome/control page smoke test
-          - The same macOS universal package tested again on Apple Silicon
 
           Verify the downloaded package against its accompanying SHA256 file before use.
+          Dedicated two-hour and 24-hour real runs were waived by the operator in favor of online acceptance; this release does not claim completed 24-hour real-world validation.
           EOF
+          if [ "$INCLUDE_MACOS" = 'true' ]; then
+            printf '\nAlso includes the macOS universal package, smoke-tested on both Intel and Apple Silicon.\n' >>release-notes.md
+          else
+            printf '\nWindows-only release. No macOS package is published for this version; macOS users should keep their previously validated version.\n' >>release-notes.md
+          fi
           if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
             gh release upload "$tag" release-assets/* --clobber --repo '${{ github.repository }}'
             gh release edit "$tag" \

@@ -14,6 +14,12 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 
 正式包内已经包含 Node.js、非秘密连接配置和必要的公开 CA，普通用户不需要安装 Node、npm、Python 或编译工具。必须保持启动后的“终端”窗口开启；关闭窗口会停止助手。
 
+## 长运行与自动恢复
+
+单次运行最长可配置 1,440 分钟，多个停止条件任一先到即停止。长运行前关闭 macOS 自动睡眠，并保持启动助手的“终端”窗口和可见 Chrome 打开；助手不会在电脑休眠、进程退出、验证码或明确平台限制后无人确认地继续。
+
+单独的服务异常、网络错误、请求异常或瞬时 5xx 会保存检查点，并按“重载当前页 → 重建页面 → 使用同一画像重启可见浏览器”的有界阶梯恢复。本机控制页显示类别、阶段、次数、下次尝试和结果；登录失效、验证码、访问频繁、账号异常及恢复预算耗尽仍安全暂停。脱敏恢复日志位于共享 `data/diagnostics`，最多 3 个 1 MiB 文件，不包含 Cookie、令牌、页面正文或完整主页地址。
+
 ## 设备被撤销
 
 管理员在网页端撤销设备（或停用你的账号）后，本机会立即失去同步与领取运行的权限，控制页显示授权失败。已撤销的设备在网页端默认隐藏、也无法删除，只作为只读历史保留；要继续使用只能在本机用新的配对码重新配对，钥匙串里的旧令牌不会恢复。撤销不影响已经入库的候选与证据。
@@ -41,7 +47,7 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 cd /path/to/douyin_couple_scraper
 npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/build-collector-macos.sh \
-  --version 0.1.5 \
+  --version 0.1.6 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
@@ -58,7 +64,7 @@ bash scripts/build-collector-macos.sh \
 ```bash
 cd /path/to/douyin_couple_scraper
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.5.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.6.tar.gz'
 ```
 
 验证内容包括：包内 Node 可执行、Keychain 设备令牌往返、独立画像创建、可见 Chrome 启动和本地控制页。测试使用临时数据目录，结束时删除对应的测试钥匙串项目。若测试机暂时没有 Chrome，可以加 `--skip-visible-chrome` 做不完整检查，但该结果不能作为正式发布验收。

@@ -1,3 +1,4 @@
+import { parseCampaignRuleSet } from '@douyin/contracts';
 import type { CampaignRuleSet } from '@douyin/contracts';
 
 type HardRule = CampaignRuleSet['hardRules'][number];
@@ -118,13 +119,17 @@ export function buildRuleSet(base: CampaignRuleSet | null, values: RuleFormValue
   applyStopCondition(stopConditions, 'targetCandidates', values.targetCandidates);
   if (Object.keys(stopConditions).length === 0) return null;
 
-  return {
-    schemaVersion: 2 as const,
-    hardRules,
-    manualChecks,
-    stopConditions,
-    pacing: base?.pacing ?? { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
-  } satisfies CampaignRuleSet;
+  try {
+    return parseCampaignRuleSet({
+      schemaVersion: 2 as const,
+      hardRules,
+      manualChecks,
+      stopConditions,
+      pacing: base?.pacing ?? { minimumDelayMs: 1_500, maximumDelayMs: 3_000 },
+    } satisfies CampaignRuleSet);
+  } catch {
+    return null;
+  }
 }
 
 function applyStopCondition(

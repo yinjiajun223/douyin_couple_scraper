@@ -56,7 +56,7 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
   <section class="runs-section" aria-labelledby="runs-heading">
     <div class="section-head"><h2 id="runs-heading"><span class="step">03</span>选择运行，人工开始</h2><button id="refresh" class="secondary">刷新任务</button></div>
     <form id="low-confidence-form" class="safety-config">
-      <div><h3>未识别与低可信度处理</h3><p>解析阈值固定为 0.75。未识别到新作品、作者或低可信度页面时不会猜测和写入达人库，并按右侧策略继续或暂停；登录、验证码和异常页面仍立即暂停。</p></div>
+      <div><h3>未识别与低可信度处理</h3><p>解析阈值固定为 0.75。未识别到新作品、作者或低可信度页面时不会猜测和写入达人库，并按右侧策略继续或暂停；服务或网络瞬时故障会低频自动恢复，登录、验证码和明确平台限制仍立即暂停。</p></div>
       <div class="safety-fields">
         <label>处理方式<select id="low-confidence-mode"><option value="never_pause">永不因此暂停</option><option value="pause_after_consecutive">连续达到次数后暂停</option></select></label>
         <label class="limit" id="low-confidence-limit-label" hidden>连续次数<input id="low-confidence-limit" type="number" required min="1" max="1000" step="1" value="1" /></label>
@@ -117,8 +117,14 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
         const resume = run.status === 'paused' || recovering ? '<button data-action="resume" class="secondary" ' + (state.connectionError || runtime.activeRunId ? 'disabled' : '') + '>继续</button>' : '';
         const terminate = ['running', 'paused', 'claimed'].includes(run.status) ? '<button data-action="terminate" class="danger">终止</button>' : '';
         const low = run.lowConfidenceDiagnostics || {};
+        const recovery = run.recoveryDiagnostics || {};
         const latest = low.lastIssue ? '<p class="run-note diagnostic">最近低可信度：' + Number(low.lastIssue.parserConfidence || 0).toFixed(2) + '；缺少 ' + escapeHtml((low.lastIssue.missingFields || []).join('、') || '关键主页字段') + '</p>' : '';
-        return '<article class="run" data-run-id="' + escapeHtml(run.id) + '"><div class="run-head"><h3>' + escapeHtml(run.campaignName || run.id) + '</h3><small>状态：' + escapeHtml(recovering ? '等待本机继续' : labels[run.status] || run.status) + '</small></div><div class="counts"><span><b>' + Number(p.feedItemsSeen || 0) + '</b>浏览作品</span><span><b>' + Number(p.creatorProfilesSeen || 0) + '</b>核验作者</span><span><b>' + Number(p.candidatesFound || 0) + '</b>硬筛通过</span><span><b>' + Number(low.skippedTotal || 0) + '</b>解析跳过</span></div>' + (run.localMessage ? '<p class="run-note">' + escapeHtml(run.localMessage) + '</p>' : '') + latest + '<div class="actions">' + start + pause + resume + terminate + '</div></article>';
+        const recoveryIssues = { transient_page_failure:'暂时性页面故障', platform_restriction:'平台限制', login_required:'登录失效', captcha_required:'安全验证', low_parser_confidence:'低可信度' };
+        const recoveryStages = { idle:'空闲', reload_page:'重新加载当前页', recreate_profile_page:'重建页面', restart_browser:'同画像重启浏览器', circuit_open:'恢复熔断' };
+        const recoveryResults = { waiting:'等待重试', attempting:'正在尝试', recovered:'已恢复', exhausted:'恢复预算耗尽', cancelled:'已取消', idle:'空闲' };
+        const nextAttempt = recovery.nextAttemptAt ? '；下次尝试：' + escapeHtml(new Date(recovery.nextAttemptAt).toLocaleString('zh-CN')) : '';
+        const recoveryNote = recovery.issueCode ? '<p class="run-note diagnostic">恢复诊断：' + escapeHtml(recoveryIssues[recovery.issueCode] || '未知安全事件') + ' · ' + escapeHtml(recovery.pageType === 'feed' ? '推荐页' : '作者页') + ' · ' + escapeHtml(recoveryStages[recovery.stage] || '未知阶段') + ' · 第 ' + Number(recovery.attemptCount || 0) + ' 次 · ' + escapeHtml(recoveryResults[recovery.lastResult] || '未知结果') + nextAttempt + '</p>' : '';
+        return '<article class="run" data-run-id="' + escapeHtml(run.id) + '"><div class="run-head"><h3>' + escapeHtml(run.campaignName || run.id) + '</h3><small>状态：' + escapeHtml(recovering ? '等待本机继续' : labels[run.status] || run.status) + '</small></div><div class="counts"><span><b>' + Number(p.feedItemsSeen || 0) + '</b>浏览作品</span><span><b>' + Number(p.creatorProfilesSeen || 0) + '</b>核验作者</span><span><b>' + Number(p.candidatesFound || 0) + '</b>硬筛通过</span><span><b>' + Number(low.skippedTotal || 0) + '</b>解析跳过</span></div>' + (run.localMessage ? '<p class="run-note">' + escapeHtml(run.localMessage) + '</p>' : '') + recoveryNote + latest + '<div class="actions">' + start + pause + resume + terminate + '</div></article>';
       }).join('') : '<p class="empty">还没有可执行的运行。请在工作台「筛选任务」保存任务后，点击「创建运行」。</p>';
     }
     if (state.connectionError) message.textContent = state.connectionError;

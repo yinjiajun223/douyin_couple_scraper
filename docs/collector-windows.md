@@ -10,6 +10,14 @@
 6. 在管理后台保存筛选任务并“创建运行”，回到本地控制页刷新任务。低可信度页面默认永不导致暂停，也可主动设置连续暂停次数；运行中可以即时修改。该设置不降低 0.75 解析阈值，低可信度页面始终跳过且不入库。只有本地明确开始或继续才会执行采集，后台创建任务、自动刷新和助手重启均不会自动采集。
 7. 同步或证据上传失败时，先修复网络/OSS，再继续原运行。本机有待同步证据时不要删除数据目录、换画像或重新配对。
 
+## 长运行与自动恢复
+
+- 单次运行最长可配置 1,440 分钟。多个停止条件是“任一先到即停止”；希望尽量按时间运行时，应清空会更早触发的非必需作品数、作者数或候选数条件。
+- 运行前关闭 Windows 自动睡眠，并保持 `start-collector.cmd` 的 CMD 窗口和可见 Chrome 打开。关闭窗口、电脑休眠、断电或进程退出都不会由后台自动续跑。
+- 单独的“服务异常”“网络错误”“请求异常”或瞬时 5xx 会先保存检查点，再约 15 秒重载当前页、约 60 秒重建页面，必要时约 5 分钟后使用同一持久画像重启可见浏览器。恢复有次数与熔断上限，不会无限刷新。
+- 登录失效、验证码、安全验证、访问频繁、账号异常和无法可靠分类的故障仍立即暂停并等待人工处理。
+- 本机控制页显示故障类别、页面类型、恢复阶段、尝试次数、下次尝试时间和最后结果；恢复期间“暂停”“终止”仍有效。脱敏日志位于共享 `data/diagnostics`，单文件最多 1 MiB、最多 3 个文件，不含 Cookie、令牌、页面正文或完整主页地址。
+
 源码本地调试请按 `docs/local-development.md` 使用 `npm run dev:local`，不要同时启动分发包。本轮源码改动不代表已有 ZIP 已更新，分发前须重新打包和执行冒烟验证。
 
 ## 设备被撤销
@@ -32,8 +40,8 @@
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.5.zip
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.5.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.6.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.6.zip
 ```
 
 `CaCertificatePath` 只接受公开 CA/服务器证书，构建器会将它作为 `NODE_EXTRA_CA_CERTS` 随包分发，不得打包私钥。使用公开可信 CA 的域名时可以省略此参数。

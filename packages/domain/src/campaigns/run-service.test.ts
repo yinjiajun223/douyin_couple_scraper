@@ -65,5 +65,16 @@ describe('采集运行状态机', () => {
         elapsedSeconds: 3_600,
       }),
     ).toBe('max_duration_minutes');
+    expect(
+      determineRunStopReason(
+        { ...rules, stopConditions: { targetCandidates: 30 } },
+        {
+          feedItemsSeen: 50,
+          creatorProfilesSeen: 10,
+          candidatesFound: 30,
+          elapsedSeconds: 600,
+        },
+      ),
+    ).toBe('target_candidates');
   });
 });

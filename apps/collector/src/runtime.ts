@@ -23,7 +23,19 @@ import type { CollectorControlApiClient, RemoteRun } from './control-server.js';
 import { PersistentIngestionQueue } from './ingestion-queue.js';
 import type { UploadScreenshotInput } from './media-upload.js';
 import { inspectDouyinCreatorProfile } from './profile-inspection.js';
+import { DouyinProfileSafetyError } from './profile-inspection.js';
+import type { DouyinProfileInspection } from './profile-inspection.js';
 import { collectVisibleRecommendationFeed } from './recommendation-feed.js';
+import {
+  createIdleRecoveryCheckpoint,
+  normalizeRecoveryCheckpoint,
+  RECOVERY_STEPS,
+  recordContextRestart,
+  recoveryDelayMs,
+  recoveryStartIndex,
+} from './recovery-controller.js';
+import type { RecoveryCheckpoint } from './recovery-controller.js';
+import { RecoveryEventLog } from './recovery-log.js';
 import {
   decideLowConfidenceAction,
   DEFAULT_LOW_CONFIDENCE_POLICY,
@@ -56,6 +68,7 @@ interface Checkpoint {
     } | null;
     skippedTotal: number;
   };
+  recovery?: RecoveryCheckpoint;
 }
 
 type RuntimeApi = Pick<
@@ -68,6 +81,9 @@ export interface CollectorRuntimeOptions {
   profileStore: CollectorBrowserProfileStore;
   uploadScreenshot: (input: Omit<UploadScreenshotInput, 'apiBaseUrl'>) => Promise<unknown>;
   launchProfile?: typeof launchSelectedCollectorProfile;
+  now?: () => number;
+  random?: () => number;
+  wait?: (milliseconds: number) => Promise<void>;
 }
 
 /** One visible browser and one locally authorized run at a time. No polling starts browsing. */
@@ -87,11 +103,16 @@ export class CollectorRuntime {
   private readonly moduleFeedItems = new Map<string, DouyinFeedItem>();
   private lowConfidencePolicy: LowConfidencePolicy = { ...DEFAULT_LOW_CONFIDENCE_POLICY };
   private restoring: Promise<void> | null = null;
+  private contextGeneration = 0;
+  private readonly plannedContextClosures = new Set<number>();
+  private readonly recoveryLog: RecoveryEventLog;
+  private lastRecoveryLogFingerprint: string | null = null;
 
   public constructor(private readonly options: CollectorRuntimeOptions) {
     this.directory = path.join(options.profileStore.dataRoot, 'runs');
     this.settingsPath = path.join(options.profileStore.dataRoot, 'collector-settings.json');
     this.queue = new PersistentIngestionQueue(options.profileStore.dataRoot);
+    this.recoveryLog = new RecoveryEventLog(options.profileStore.dataRoot);
   }
 
   public assertIdle(): void {
@@ -129,6 +150,7 @@ export class CollectorRuntime {
       browserOpen: Boolean(this.context),
       message: this.checkpoint?.message ?? '',
       lowConfidencePolicy: this.lowConfidencePolicy,
+      recovery: this.checkpoint?.recovery ?? createIdleRecoveryCheckpoint(),
       pendingBatches: (await this.queue.listPending()).length,
       pendingEvidence: Boolean(this.checkpoint?.screenshot),
     };
@@ -142,6 +164,7 @@ export class CollectorRuntime {
             progress: this.checkpoint.progress,
             localMessage: this.checkpoint.message,
             lowConfidenceDiagnostics: this.checkpoint.lowConfidence,
+            recoveryDiagnostics: this.checkpoint.recovery ?? createIdleRecoveryCheckpoint(),
             localPaused: this.activeRunId !== run.id && run.status === 'running',
           }
         : {}),
@@ -167,18 +190,22 @@ export class CollectorRuntime {
       await this.feedPage.bringToFront();
       return;
     }
-    if (this.context) await this.context.close();
+    if (this.context) await this.closeCurrentContextForReplacement();
     if (!(await this.options.profileStore.getSelectedProfile()))
       throw new Error('请先创建并选择一个独立浏览器画像。');
     const context = await (this.options.launchProfile ?? launchSelectedCollectorProfile)(
       this.options.profileStore,
     );
+    const generation = ++this.contextGeneration;
     this.moduleFeedItems.clear();
     this.context = context;
     context.on('response', (response) => {
+      if (generation !== this.contextGeneration) return;
       void this.captureModuleFeedResponse(response);
     });
     context.once('close', () => {
+      if (this.plannedContextClosures.delete(generation)) return;
+      if (generation !== this.contextGeneration) return;
       this.context = null;
       this.feedPage = null;
       this.profilePage = null;
@@ -194,7 +221,7 @@ export class CollectorRuntime {
 
   public async closeBrowser(): Promise<void> {
     this.assertIdle();
-    await this.context?.close();
+    await this.closeCurrentContextForReplacement();
     this.context = null;
     this.feedPage = null;
     this.profilePage = null;
@@ -242,12 +269,13 @@ export class CollectorRuntime {
       this.activeRunId = runId;
       this.work = this.collect({ ...run, rules })
         .catch(async (error: unknown) => {
+          if (error instanceof RecoveryCancelledError) return;
           this.lastErrorCode = error instanceof Error ? error.name : 'UnknownError';
           if (this.checkpoint) {
             this.checkpoint.message =
               error instanceof CollectionPausedError
                 ? error.message
-                : '采集已暂停，进度保存在本机。请检查浏览器、网络和 OSS 配置，再点击继续。';
+                : '发生未能安全归类的错误，采集已安全暂停且进度保存在本机。请人工检查浏览器、网络和本机诊断后再继续。';
             await this.saveCheckpoint().catch(() => {
               this.lastErrorCode = 'CheckpointWriteError';
               this.checkpoint!.message =
@@ -307,9 +335,8 @@ export class CollectorRuntime {
   private async collect(run: RemoteRun): Promise<void> {
     const rules = parseCampaignRuleSet(run.rules);
     const state = this.checkpoint!;
-    const page = this.feedPage!;
     const device = await this.options.apiClient.getDevice();
-    const started = Date.now();
+    const started = this.now();
     const previousElapsed = state.progress.elapsedSeconds;
     const delay = () =>
       Math.max(1_000, rules.pacing.minimumDelayMs) +
@@ -320,7 +347,7 @@ export class CollectorRuntime {
     let recoveryInterval = EMPTY_FEED_RECOVERY_INITIAL_PASSES;
     let nextRecoveryPass = EMPTY_FEED_RECOVERY_INITIAL_PASSES;
     while (!this.stopped) {
-      state.progress.elapsedSeconds = previousElapsed + Math.floor((Date.now() - started) / 1000);
+      state.progress.elapsedSeconds = previousElapsed + Math.floor((this.now() - started) / 1000);
       if (state.pendingBatch) {
         await this.flushPending();
         if (this.stopped) break;
@@ -334,7 +361,13 @@ export class CollectorRuntime {
         await this.saveCheckpoint();
         break;
       }
-      await this.assertSafe(page);
+      let page = this.feedPage;
+      if (!page || page.isClosed()) {
+        throw new CollectionPausedError(
+          '推荐页已关闭，采集已安全暂停。请人工检查可见浏览器后再继续。',
+        );
+      }
+      page = await this.ensureFeedSafetyWithRecovery(page, run.id);
       await page.bringToFront();
       const { items: domItems } = await collectVisibleRecommendationFeed(
         {
@@ -413,12 +446,13 @@ export class CollectorRuntime {
         1,
         ...rules.hardRules.map((rule) => (rule.type === 'recent-post-likes' ? rule.windowDays : 1)),
       );
-      const profilePage = await this.ensureProfilePage();
-      const inspection = await inspectDouyinCreatorProfile(profilePage, {
+      const inspection = await this.inspectProfileWithRecovery({
         profileUrl: item.authorProfileUrl!,
         rollingDays,
         settleMs: delay(),
       });
+      const profilePage = this.profilePage;
+      if (!profilePage) throw new Error('作者核验页不可用，请重试。');
       const safetyIssue = await this.findSafetyIssue(
         profilePage,
         inspection.profile.parserConfidence,
@@ -528,7 +562,7 @@ export class CollectorRuntime {
       await this.saveCheckpoint();
       await this.flushPending();
       if (!this.stopped && !determineRunStopReason(rules, state.progress))
-        await page.waitForTimeout(delay());
+        await this.feedPage?.waitForTimeout(delay());
     }
     if (this.stopped) {
       state.message = this.context
@@ -544,6 +578,307 @@ export class CollectorRuntime {
     if (this.profilePage && !this.profilePage.isClosed()) return this.profilePage;
     this.profilePage = await this.context.newPage();
     return this.profilePage;
+  }
+
+  private async inspectProfileWithRecovery(input: {
+    profileUrl: string;
+    rollingDays: number;
+    settleMs: number;
+  }): Promise<DouyinProfileInspection> {
+    try {
+      return await inspectDouyinCreatorProfile(await this.ensureProfilePage(), input);
+    } catch (error) {
+      if (!(error instanceof DouyinProfileSafetyError)) throw error;
+      if (error.issue.code !== 'transient_page_failure') {
+        throw new CollectionPausedError(error.issue.humanMessage);
+      }
+      return this.recoverProfileInspection(input, error.issue);
+    }
+  }
+
+  private async ensureFeedSafetyWithRecovery(page: Page, runId: string): Promise<Page> {
+    const initialIssue = await this.findSafetyIssue(page);
+    if (!initialIssue) return page;
+    if (initialIssue.code !== 'transient_page_failure') {
+      throw new CollectionPausedError(initialIssue.humanMessage);
+    }
+    return this.recoverFeedPage(runId, initialIssue);
+  }
+
+  private async recoverFeedPage(runId: string, initialIssue: CollectionSafetyIssue): Promise<Page> {
+    const state = this.checkpoint!;
+    const previousRecovery = normalizeRecoveryCheckpoint(state.recovery);
+    const startIndex = recoveryStartIndex(previousRecovery, this.now());
+    const eventStartedAt = new Date(this.now()).toISOString();
+    let issue = initialIssue;
+    for (let index = startIndex; index < RECOVERY_STEPS.length; index += 1) {
+      const step = RECOVERY_STEPS[index]!;
+      if (step.stage === 'restart_browser') {
+        const circuit = recordContextRestart(previousRecovery, this.now());
+        previousRecovery.contextRestartTimestamps = circuit.timestamps;
+        previousRecovery.circuitBreakerCount = circuit.timestamps.length;
+        if (circuit.circuitOpen) {
+          state.recovery = {
+            ...previousRecovery,
+            attemptCount: index - startIndex + 1,
+            eventStartedAt,
+            ...recoveryIssueEvidence(issue),
+            lastResult: 'exhausted',
+            nextAttemptAt: null,
+            pageType: 'feed',
+            stage: 'circuit_open',
+          };
+          state.message =
+            '一小时内已达到 3 次浏览器恢复上限，采集已暂停。请人工检查网络、账号与抖音页面后再继续。';
+          await this.saveCheckpoint();
+          throw new CollectionPausedError(state.message);
+        }
+      }
+      const waitMs = recoveryDelayMs(step, this.options.random?.() ?? Math.random());
+      const attemptCount = index - startIndex + 1;
+      state.recovery = {
+        ...previousRecovery,
+        attemptCount,
+        eventStartedAt,
+        ...recoveryIssueEvidence(issue),
+        lastResult: 'waiting',
+        nextAttemptAt: new Date(this.now() + waitMs).toISOString(),
+        pageType: 'feed',
+        stage: step.stage,
+      };
+      state.message = `推荐页暂时不可用，正在自动恢复（${recoveryStageLabel(step.stage)}，第 ${attemptCount} 次）；可随时人工暂停或终止。`;
+      await this.saveCheckpoint();
+      if (!(await this.waitForRecovery(waitMs, runId))) {
+        state.recovery = {
+          ...state.recovery,
+          lastResult: 'cancelled',
+          nextAttemptAt: null,
+        };
+        state.message = '推荐页自动恢复已按人工操作取消，当前进度已保存。';
+        await this.saveCheckpoint();
+        throw new RecoveryCancelledError();
+      }
+      state.recovery = { ...state.recovery, lastResult: 'attempting', nextAttemptAt: null };
+      await this.saveCheckpoint();
+      try {
+        const recoveredPage = await this.prepareFeedRecoveryStage(step.stage);
+        const nextIssue = await this.findSafetyIssue(recoveredPage);
+        if (!nextIssue) {
+          state.recovery = {
+            ...state.recovery,
+            contextRestartTimestamps: previousRecovery.contextRestartTimestamps,
+            circuitBreakerCount: previousRecovery.circuitBreakerCount,
+            lastRecoveredAt: new Date(this.now()).toISOString(),
+            lastResult: 'recovered',
+          };
+          state.message = `推荐页已通过${recoveryStageLabel(step.stage)}恢复，正在继续采集；已见数据不会重复写入。`;
+          await this.saveCheckpoint();
+          return recoveredPage;
+        }
+        if (nextIssue.code !== 'transient_page_failure') {
+          throw new CollectionPausedError(nextIssue.humanMessage);
+        }
+        issue = nextIssue;
+      } catch (error) {
+        if (error instanceof CollectionPausedError) throw error;
+        if (!isTransientNavigationFailure(error)) throw error;
+        issue = {
+          code: 'transient_page_failure',
+          humanMessage: '抖音推荐页导航暂时失败，正在低频自动恢复。',
+          navigationErrorCode: normalizeRuntimeNavigationError(error),
+        };
+      }
+    }
+    state.recovery = {
+      ...normalizeRecoveryCheckpoint(state.recovery),
+      ...recoveryIssueEvidence(issue),
+      lastResult: 'exhausted',
+      nextAttemptAt: null,
+    };
+    state.message =
+      '推荐页故障在刷新、重建页面和重启浏览器后仍未恢复，恢复预算已耗尽。进度已保存，请人工检查后继续。';
+    await this.saveCheckpoint();
+    throw new CollectionPausedError(state.message);
+  }
+
+  private async prepareFeedRecoveryStage(
+    stage: 'recreate_profile_page' | 'reload_page' | 'restart_browser',
+  ): Promise<Page> {
+    if (stage === 'reload_page') {
+      if (!this.feedPage || this.feedPage.isClosed()) {
+        throw new CollectionPausedError('推荐页已关闭，采集已安全暂停，请人工检查浏览器。');
+      }
+      await this.feedPage.reload({ timeout: 30_000, waitUntil: 'domcontentloaded' });
+      return this.feedPage;
+    }
+    if (stage === 'recreate_profile_page') {
+      if (!this.context) throw new CollectionPausedError('浏览器已关闭，采集已安全暂停。');
+      const oldPage = this.feedPage;
+      this.feedPage = null;
+      if (oldPage && !oldPage.isClosed()) await oldPage.close().catch(() => undefined);
+      const replacement = await this.context.newPage();
+      this.feedPage = replacement;
+      await replacement.goto('https://www.douyin.com/', {
+        timeout: 30_000,
+        waitUntil: 'domcontentloaded',
+      });
+      return replacement;
+    }
+    await this.restartBrowserForRecovery();
+    if (!this.feedPage) throw new CollectionPausedError('浏览器推荐页恢复失败，采集已暂停。');
+    return this.feedPage;
+  }
+
+  private async recoverProfileInspection(
+    input: { profileUrl: string; rollingDays: number; settleMs: number },
+    initialIssue: CollectionSafetyIssue,
+  ): Promise<DouyinProfileInspection> {
+    const state = this.checkpoint!;
+    const previousRecovery = normalizeRecoveryCheckpoint(state.recovery);
+    const startIndex = recoveryStartIndex(previousRecovery, this.now());
+    const eventStartedAt = new Date(this.now()).toISOString();
+    let issue = initialIssue;
+    for (let index = startIndex; index < RECOVERY_STEPS.length; index += 1) {
+      const step = RECOVERY_STEPS[index]!;
+      if (step.stage === 'restart_browser') {
+        const circuit = recordContextRestart(previousRecovery, this.now());
+        previousRecovery.contextRestartTimestamps = circuit.timestamps;
+        previousRecovery.circuitBreakerCount = circuit.timestamps.length;
+        if (circuit.circuitOpen) {
+          state.recovery = {
+            ...previousRecovery,
+            attemptCount: index - startIndex + 1,
+            eventStartedAt,
+            ...recoveryIssueEvidence(issue),
+            lastResult: 'exhausted',
+            nextAttemptAt: null,
+            pageType: 'profile',
+            stage: 'circuit_open',
+          };
+          state.message =
+            '一小时内已达到 3 次浏览器恢复上限，采集已暂停。请人工检查网络、账号与抖音页面后再继续。';
+          await this.saveCheckpoint();
+          throw new CollectionPausedError(state.message);
+        }
+      }
+      const waitMs = recoveryDelayMs(step, this.options.random?.() ?? Math.random());
+      const attemptCount = index - startIndex + 1;
+      state.recovery = {
+        ...previousRecovery,
+        attemptCount,
+        eventStartedAt,
+        ...recoveryIssueEvidence(issue),
+        lastResult: 'waiting',
+        nextAttemptAt: new Date(this.now() + waitMs).toISOString(),
+        pageType: 'profile',
+        stage: step.stage,
+      };
+      state.message = `抖音页面暂时不可用，正在自动恢复（${recoveryStageLabel(step.stage)}，第 ${attemptCount} 次）；可随时人工暂停或终止。`;
+      await this.saveCheckpoint();
+      if (!(await this.waitForRecovery(waitMs, state.runId))) {
+        state.recovery = {
+          ...state.recovery,
+          lastResult: 'cancelled',
+          nextAttemptAt: null,
+        };
+        state.message = '自动恢复已按人工操作取消，当前进度已保存。';
+        await this.saveCheckpoint();
+        throw new RecoveryCancelledError();
+      }
+      state.recovery = {
+        ...state.recovery,
+        lastResult: 'attempting',
+        nextAttemptAt: null,
+      };
+      await this.saveCheckpoint();
+      try {
+        const profilePage = await this.prepareRecoveryStage(step.stage);
+        const inspection = await inspectDouyinCreatorProfile(profilePage, input);
+        const recoveredAt = new Date(this.now()).toISOString();
+        state.recovery = {
+          ...state.recovery,
+          contextRestartTimestamps: previousRecovery.contextRestartTimestamps,
+          circuitBreakerCount: previousRecovery.circuitBreakerCount,
+          lastRecoveredAt: recoveredAt,
+          lastResult: 'recovered',
+        };
+        state.message = `页面已通过${recoveryStageLabel(step.stage)}恢复，正在继续当前作者；已见数据不会重复写入。`;
+        await this.saveCheckpoint();
+        return inspection;
+      } catch (error) {
+        if (!(error instanceof DouyinProfileSafetyError)) throw error;
+        if (error.issue.code !== 'transient_page_failure') {
+          throw new CollectionPausedError(error.issue.humanMessage);
+        }
+        issue = error.issue;
+      }
+    }
+    state.recovery = {
+      ...normalizeRecoveryCheckpoint(state.recovery),
+      ...recoveryIssueEvidence(issue),
+      lastResult: 'exhausted',
+      nextAttemptAt: null,
+    };
+    state.message =
+      '暂时性页面故障在刷新、重建核验页和重启浏览器后仍未恢复，恢复预算已耗尽。进度已保存，请人工检查后继续。';
+    await this.saveCheckpoint();
+    throw new CollectionPausedError(state.message);
+  }
+
+  private async prepareRecoveryStage(
+    stage: 'recreate_profile_page' | 'reload_page' | 'restart_browser',
+  ): Promise<Page> {
+    if (stage === 'reload_page') return this.ensureProfilePage();
+    if (stage === 'recreate_profile_page') {
+      const oldPage = this.profilePage;
+      this.profilePage = null;
+      if (oldPage && !oldPage.isClosed()) await oldPage.close().catch(() => undefined);
+      return this.ensureProfilePage();
+    }
+    await this.restartBrowserForRecovery();
+    return this.ensureProfilePage();
+  }
+
+  private async restartBrowserForRecovery(): Promise<void> {
+    await this.closeCurrentContextForReplacement();
+    this.context = null;
+    this.feedPage = null;
+    this.profilePage = null;
+    this.moduleFeedItems.clear();
+    await this.openBrowser();
+  }
+
+  private async closeCurrentContextForReplacement(): Promise<void> {
+    const context = this.context;
+    if (!context) return;
+    const generation = this.contextGeneration;
+    this.plannedContextClosures.add(generation);
+    try {
+      await context.close();
+    } catch (error) {
+      this.plannedContextClosures.delete(generation);
+      throw error;
+    }
+  }
+
+  private async waitForRecovery(milliseconds: number, runId: string): Promise<boolean> {
+    let remaining = milliseconds;
+    while (remaining > 0) {
+      if (this.stopped || !this.context) return false;
+      const remote = (await this.options.apiClient.syncRuns()).find((entry) => entry.id === runId);
+      if (!remote || remote.status !== 'running') {
+        this.stopped = true;
+        return false;
+      }
+      const slice = Math.min(1_000, remaining);
+      await (this.options.wait ?? defaultWait)(slice);
+      remaining -= slice;
+    }
+    return !this.stopped && Boolean(this.context);
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
   }
 
   private async captureModuleFeedResponse(response: PlaywrightResponse): Promise<void> {
@@ -648,7 +983,9 @@ export class CollectorRuntime {
     this.moduleFeedItems.clear();
     try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await this.assertSafe(page);
+      const issue = await this.findSafetyIssue(page);
+      if (issue?.code === 'transient_page_failure') return false;
+      if (issue) throw new CollectionPausedError(issue.humanMessage);
       return true;
     } catch (error) {
       if (error instanceof CollectionPausedError) throw error;
@@ -741,6 +1078,7 @@ export class CollectorRuntime {
           lastIssue: null,
           skippedTotal: 0,
         },
+        recovery: createIdleRecoveryCheckpoint(),
       };
     }
   }
@@ -762,6 +1100,7 @@ export class CollectorRuntime {
           ? Math.max(0, lowConfidence.skippedTotal)
           : 0,
       },
+      recovery: normalizeRecoveryCheckpoint(state.recovery),
     };
   }
 
@@ -785,7 +1124,85 @@ export class CollectorRuntime {
       mode: 0o600,
     });
     await rename(`${target}.tmp`, target);
+    await this.writeRecoveryEventIfChanged();
+  }
+
+  private async writeRecoveryEventIfChanged(): Promise<void> {
+    const state = this.checkpoint;
+    const recovery = state?.recovery;
+    if (!state || !recovery || !recovery.issueCode || !recovery.pageType) return;
+    const fingerprint = JSON.stringify(recovery);
+    if (fingerprint === this.lastRecoveryLogFingerprint) return;
+    this.lastRecoveryLogFingerprint = fingerprint;
+    await this.recoveryLog
+      .append({
+        at: new Date(this.now()).toISOString(),
+        browserGeneration: this.contextGeneration,
+        issueCode: recovery.issueCode,
+        ...(recovery.navigationErrorCode
+          ? { navigationErrorCode: recovery.navigationErrorCode }
+          : {}),
+        pageType: recovery.pageType,
+        progress: state.progress,
+        result: recovery.lastResult,
+        runId: state.runId,
+        stage: recovery.stage,
+        ...(recovery.statusCode === null ? {} : { statusCode: recovery.statusCode }),
+      })
+      .catch(() => {
+        this.lastErrorCode = 'RecoveryLogWriteError';
+      });
   }
 }
 
 class CollectionPausedError extends Error {}
+class RecoveryCancelledError extends Error {}
+
+function recoveryStageLabel(
+  stage: 'recreate_profile_page' | 'reload_page' | 'restart_browser',
+): string {
+  if (stage === 'reload_page') return '重新加载当前作者页';
+  if (stage === 'recreate_profile_page') return '重建作者核验页';
+  return '使用同一画像重启可见浏览器';
+}
+
+function defaultWait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isTransientNavigationFailure(error: unknown): boolean {
+  return normalizeRuntimeNavigationError(error) !== 'UNCLASSIFIED_NAVIGATION_ERROR';
+}
+
+function normalizeRuntimeNavigationError(error: unknown): string {
+  if (error instanceof Error && error.name === 'TimeoutError') return 'NAVIGATION_TIMEOUT';
+  const message = error instanceof Error ? error.message : '';
+  for (const code of ['ERR_CONNECTION_CLOSED', 'ERR_CONNECTION_RESET', 'ERR_TIMED_OUT']) {
+    if (message.includes(code)) return code;
+  }
+  return 'UNCLASSIFIED_NAVIGATION_ERROR';
+}
+
+function recoveryIssueEvidence(
+  issue: CollectionSafetyIssue,
+): Pick<RecoveryCheckpoint, 'issueCode' | 'navigationErrorCode' | 'statusCode'> {
+  const navigationErrorCode = isAllowedNavigationErrorCode(issue.navigationErrorCode)
+    ? issue.navigationErrorCode
+    : null;
+  return {
+    issueCode: issue.code,
+    navigationErrorCode,
+    statusCode: Number.isInteger(issue.statusCode) ? issue.statusCode! : null,
+  };
+}
+
+function isAllowedNavigationErrorCode(
+  value: string | undefined,
+): value is NonNullable<RecoveryCheckpoint['navigationErrorCode']> {
+  return (
+    value === 'ERR_CONNECTION_CLOSED' ||
+    value === 'ERR_CONNECTION_RESET' ||
+    value === 'ERR_TIMED_OUT' ||
+    value === 'NAVIGATION_TIMEOUT'
+  );
+}

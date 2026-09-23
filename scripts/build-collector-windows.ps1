@@ -1,5 +1,5 @@
 param(
-  [string]$Version = '0.1.5',
+  [string]$Version = '0.1.6',
   [string]$OutputDirectory = 'artifacts',
   [string]$NodeExecutable = '',
   [Parameter(Mandatory = $true)][string]$ApiBaseUrl,

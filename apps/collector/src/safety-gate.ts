@@ -11,15 +11,25 @@ export const DEFAULT_LOW_CONFIDENCE_POLICY: LowConfidencePolicy = {
 };
 
 export type CollectionSafetyIssueCode =
-  'abnormal_page' | 'captcha_required' | 'login_required' | 'low_parser_confidence';
+  | 'captcha_required'
+  | 'login_required'
+  | 'low_parser_confidence'
+  | 'platform_restriction'
+  | 'transient_page_failure';
+
+export type CollectionNavigationErrorCode =
+  'ERR_CONNECTION_CLOSED' | 'ERR_CONNECTION_RESET' | 'ERR_TIMED_OUT' | 'NAVIGATION_TIMEOUT';
 
 export interface CollectionSafetyIssue {
   code: CollectionSafetyIssueCode;
   humanMessage: string;
+  navigationErrorCode?: string;
+  statusCode?: number;
 }
 
 export interface CollectionPageSnapshot {
   bodyText: string;
+  navigationErrorCode?: string;
   parserConfidence?: number;
   statusCode?: number;
   title?: string;
@@ -94,12 +104,46 @@ export function detectCollectionSafetyIssue(
     };
   }
   if (
-    (snapshot.statusCode !== undefined && snapshot.statusCode >= 400) ||
-    /(访问频繁|请求异常|页面不存在|网络错误|服务异常|账号异常)/u.test(searchable)
+    snapshot.statusCode === 401 ||
+    snapshot.statusCode === 403 ||
+    snapshot.statusCode === 429 ||
+    /(访问频繁|账号异常|账号受限|操作受限)/u.test(searchable)
   ) {
     return {
-      code: 'abnormal_page',
-      humanMessage: '检测到抖音异常页面。进度已保存，请人工检查页面和账号状态后再继续。',
+      code: 'platform_restriction',
+      humanMessage:
+        '检测到抖音平台限制，采集已安全暂停。请人工检查页面和账号状态；助手不会自动刷新或绕过限制。',
+      ...(snapshot.statusCode === undefined ? {} : { statusCode: snapshot.statusCode }),
+    };
+  }
+  if (
+    (snapshot.statusCode !== undefined &&
+      snapshot.statusCode >= 500 &&
+      snapshot.statusCode <= 599) ||
+    isTransientNavigationError(snapshot.navigationErrorCode) ||
+    /(请求异常|网络错误|服务异常)/u.test(searchable)
+  ) {
+    return {
+      code: 'transient_page_failure',
+      humanMessage: '抖音页面暂时不可用，正在保存进度并进行低频自动恢复。',
+      ...(snapshot.navigationErrorCode === undefined
+        ? {}
+        : { navigationErrorCode: snapshot.navigationErrorCode }),
+      ...(snapshot.statusCode === undefined ? {} : { statusCode: snapshot.statusCode }),
+    };
+  }
+  if (
+    (snapshot.statusCode !== undefined && snapshot.statusCode >= 400) ||
+    snapshot.navigationErrorCode !== undefined ||
+    /(页面不存在|异常页面)/u.test(searchable)
+  ) {
+    return {
+      code: 'platform_restriction',
+      humanMessage: '页面故障无法可靠归类，采集已安全暂停。请人工检查页面状态后再继续。',
+      ...(snapshot.navigationErrorCode === undefined
+        ? {}
+        : { navigationErrorCode: snapshot.navigationErrorCode }),
+      ...(snapshot.statusCode === undefined ? {} : { statusCode: snapshot.statusCode }),
     };
   }
   if (
@@ -120,9 +164,10 @@ export async function applyCollectionSafetyGate(input: {
   progress: CollectorRunProgress;
   runControl: SafetyPauseRunControl;
   runId: string;
-}): Promise<{ issue: CollectionSafetyIssue | null; status: 'continue' | 'paused' }> {
+}): Promise<{ issue: CollectionSafetyIssue | null; status: 'continue' | 'paused' | 'recover' }> {
   const issue = detectCollectionSafetyIssue(input.page);
   if (!issue) return { issue: null, status: 'continue' };
+  if (issue.code === 'transient_page_failure') return { issue, status: 'recover' };
 
   await input.persistence.saveSafetyPause({
     issue,
@@ -131,4 +176,15 @@ export async function applyCollectionSafetyGate(input: {
   });
   await input.runControl.changeRunStatus(input.runId, 'pause');
   return { issue, status: 'paused' };
+}
+
+function isTransientNavigationError(
+  code: string | undefined,
+): code is CollectionNavigationErrorCode {
+  return (
+    code === 'ERR_CONNECTION_CLOSED' ||
+    code === 'ERR_CONNECTION_RESET' ||
+    code === 'ERR_TIMED_OUT' ||
+    code === 'NAVIGATION_TIMEOUT'
+  );
 }

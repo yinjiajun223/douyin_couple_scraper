@@ -104,6 +104,22 @@ describe('筛选规则契约', () => {
     ).toThrow();
   });
 
+  it('最长运行时间接受 1,440 分钟并拒绝 1,441 分钟', () => {
+    const value = createDefaultCampaignRuleSet();
+    expect(
+      parseCampaignRuleSet({
+        ...value,
+        stopConditions: { maxDurationMinutes: 1_440 },
+      }).stopConditions,
+    ).toEqual({ maxDurationMinutes: 1_440 });
+    expect(() =>
+      parseCampaignRuleSet({
+        ...value,
+        stopConditions: { maxDurationMinutes: 1_441 },
+      }),
+    ).toThrow();
+  });
+
   it('对旧 schema version 给出明确的不兼容错误', () => {
     expect(() =>
       parseCampaignRuleSet({ ...createDefaultCampaignRuleSet(), schemaVersion: 0 }),
@@ -142,6 +158,8 @@ describe('Collector 协议契约', () => {
   });
 
   it('接受同一主版本并拒绝不兼容主版本', () => {
+    expect(COLLECTOR_PROTOCOL_VERSION).toBe('1.0.0');
+    expect(createDefaultCampaignRuleSet().schemaVersion).toBe(2);
     expect(() => assertCollectorProtocolCompatible('1.8.0')).not.toThrow();
     expect(() => assertCollectorProtocolCompatible('2.0.0')).toThrow('不兼容');
     expect(() => assertCollectorProtocolCompatible('not-a-version')).toThrow('不兼容');

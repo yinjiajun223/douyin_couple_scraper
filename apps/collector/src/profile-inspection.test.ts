@@ -4,7 +4,7 @@ import { createDefaultCampaignRuleSet } from '@douyin/contracts';
 import { evaluateHardFilters } from '@douyin/domain/collector';
 import { describe, expect, it, vi } from 'vitest';
 
-import { inspectDouyinCreatorProfile } from './profile-inspection.js';
+import { DouyinProfileSafetyError, inspectDouyinCreatorProfile } from './profile-inspection.js';
 
 const profileFixture = readFileSync(
   new URL(
@@ -24,14 +24,46 @@ const profilePostsApiFixture = JSON.parse(
 ) as unknown;
 
 describe('潜在命中作者主页核验', () => {
+  it('正常主页的隐藏验证脚本不应误报为需要人工验证码', async () => {
+    const profileUrl = 'https://www.douyin.com/user/boundary-author';
+    const page = {
+      bringToFront: vi.fn(),
+      content: vi
+        .fn()
+        .mockResolvedValue(
+          profileFixture.replace(
+            '</body>',
+            '<script src="/verifycenter/client.js"></script><div hidden>请完成安全验证</div></body>',
+          ),
+        ),
+      goto: vi.fn().mockResolvedValue({ status: () => 200 }),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi.fn().mockResolvedValue('边界作者 粉丝 4,999 作品'),
+      }),
+      off: vi.fn(),
+      on: vi.fn(),
+      title: vi.fn().mockResolvedValue('边界作者的抖音主页'),
+      url: vi.fn().mockReturnValue(profileUrl),
+      waitForTimeout: vi.fn(),
+    };
+
+    await expect(
+      inspectDouyinCreatorProfile(page, { profileUrl, rollingDays: 15 }),
+    ).resolves.toMatchObject({ profile: { followerCount: 4_999 } });
+  });
+
   it('采集粉丝和窗口内作品证据，未知时间保持 null', async () => {
     const profileUrl = 'https://www.douyin.com/user/boundary-author';
     const page = {
       bringToFront: vi.fn(),
       content: vi.fn().mockResolvedValue(profileFixture),
       goto: vi.fn(),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi.fn().mockResolvedValue('边界作者 粉丝 4,999 作品'),
+      }),
       off: vi.fn(),
       on: vi.fn(),
+      title: vi.fn().mockResolvedValue('边界作者的抖音主页'),
       url: vi.fn().mockReturnValue(profileUrl),
       waitForTimeout: vi.fn(),
     };
@@ -88,10 +120,14 @@ describe('潜在命中作者主页核验', () => {
         responseListener?.(response);
         await Promise.resolve();
       }),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi.fn().mockResolvedValue('Cora 粉丝 3305 作品'),
+      }),
       off: vi.fn(),
       on: vi.fn((_event: 'response', listener: ResponseListener) => {
         responseListener = listener;
       }),
+      title: vi.fn().mockResolvedValue('Cora的抖音主页'),
       url: vi.fn().mockReturnValue(profileUrl),
       waitForTimeout: vi.fn(),
     };
@@ -127,5 +163,82 @@ describe('潜在命中作者主页核验', () => {
     expect(screening.outcome).toBe('pass');
     expect(page.on).toHaveBeenCalledWith('response', expect.any(Function));
     expect(page.off).toHaveBeenCalledWith('response', expect.any(Function));
+  });
+
+  it('在解析前把主文档 503 归为暂时性故障且错误对象不泄露页面内容或主页地址', async () => {
+    const profileUrl = 'https://www.douyin.com/user/private-profile-address';
+    const sensitiveBody = '服务异常，重新刷新获取数据 私密页面正文标记';
+    const page = {
+      bringToFront: vi.fn(),
+      content: vi.fn().mockResolvedValue(`<html><body>${sensitiveBody}</body></html>`),
+      goto: vi.fn().mockResolvedValue({ status: () => 503 }),
+      locator: vi.fn().mockReturnValue({ innerText: vi.fn().mockResolvedValue(sensitiveBody) }),
+      off: vi.fn(),
+      on: vi.fn(),
+      title: vi.fn().mockResolvedValue('私密标题标记'),
+      url: vi.fn().mockReturnValue(profileUrl),
+      waitForTimeout: vi.fn(),
+    };
+
+    const error = await inspectDouyinCreatorProfile(page, {
+      profileUrl,
+      rollingDays: 15,
+      settleMs: 1_500,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DouyinProfileSafetyError);
+    expect(error).toMatchObject({
+      issue: { code: 'transient_page_failure', statusCode: 503 },
+    });
+    const serialized = JSON.stringify(error);
+    expect(serialized).not.toContain(sensitiveBody);
+    expect(serialized).not.toContain('私密标题标记');
+    expect(serialized).not.toContain(profileUrl);
+  });
+
+  it('导航超时归暂时性故障，验证码仍要求人工处理', async () => {
+    const profileUrl = 'https://www.douyin.com/user/navigation-test';
+    const timeout = Object.assign(new Error(`page.goto: Timeout 90000ms ${profileUrl}`), {
+      name: 'TimeoutError',
+    });
+    const timeoutPage = {
+      bringToFront: vi.fn(),
+      content: vi.fn(),
+      goto: vi.fn().mockRejectedValue(timeout),
+      locator: vi.fn(),
+      off: vi.fn(),
+      on: vi.fn(),
+      title: vi.fn(),
+      url: vi.fn().mockReturnValue(profileUrl),
+      waitForTimeout: vi.fn(),
+    };
+    const timeoutError = await inspectDouyinCreatorProfile(timeoutPage, {
+      profileUrl,
+      rollingDays: 15,
+    }).catch((caught: unknown) => caught);
+    expect(timeoutError).toMatchObject({
+      issue: {
+        code: 'transient_page_failure',
+        navigationErrorCode: 'NAVIGATION_TIMEOUT',
+      },
+    });
+    expect(JSON.stringify(timeoutError)).not.toContain(profileUrl);
+
+    const captchaPage = {
+      bringToFront: vi.fn(),
+      content: vi.fn().mockResolvedValue('<html><body>请完成安全验证</body></html>'),
+      goto: vi.fn().mockResolvedValue({ status: () => 200 }),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi.fn().mockResolvedValue('请完成安全验证'),
+      }),
+      off: vi.fn(),
+      on: vi.fn(),
+      title: vi.fn().mockResolvedValue('作者主页'),
+      url: vi.fn().mockReturnValue(profileUrl),
+      waitForTimeout: vi.fn(),
+    };
+    await expect(
+      inspectDouyinCreatorProfile(captchaPage, { profileUrl, rollingDays: 15 }),
+    ).rejects.toMatchObject({ issue: { code: 'captcha_required' } });
   });
 });
