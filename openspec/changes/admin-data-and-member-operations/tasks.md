@@ -20,12 +20,14 @@
 
 ## 4. 批量操作（domain + api）
 
-- [ ] 4.1 在 domain 新增批量入口，接收显式 ID 数组（上限 100，超限抛错）并**顺序**遍历，每个 ID 复用既有单条领域函数（各自开自己的事务），收集 `{ id, ok, code?, message? }` 后一次性返回。禁止并发调用以避免 `pool.getConnection()` 耗尽连接池。验证：单元测试断言上限校验、顺序执行与逐项结果结构。
-- [ ] 4.2 批量人工复核必须与单条 `submitManualReview` 语义完全一致，包括 `tighten-review-funnel` 引入的「仅从 `pending_review` 自动推进阶段、单次版本递增」。验证：集成测试断言批量通过 N 个待复核候选后各自进入 `to_contact`、`version` 各 +1、审计与事件各 N 条。
-- [ ] 4.3 部分成功语义：构造一个含版本过期目标和一个越权目标的批量请求。验证：集成测试断言其余目标成功、失败目标返回原因、无聚合式回滚，且失败目标的数据完全未变。
-- [ ] 4.4 在 `apps/api/src/server.ts` 新增批量复核与批量归档路由，权限 `candidate:write`、CSRF 必填、请求体经 zod 校验且拒绝超限。验证：`apps/api/src/authorization.integration.test.ts` 补三类断言（operator 可用、readonly 拒绝、缺 CSRF 拒绝），`npm run test:mysql` 通过。
-- [ ] 4.5 在 `apps/api/src/server.ts` 新增标签写入路由（`PUT /candidates/:id/tags`），权限 `candidate:write`、CSRF 必填、请求体经 zod 校验（标签名 1-100 字、最多 20 个），转调 `setCandidateTags`。原任务清单遗漏了这条路由，但 8.1 的网页标签编辑与 `specs/creator-candidate-library` 的「候选标签维护」都依赖它。验证：`authorization.integration.test.ts` 断言 operator 可用、readonly 拒绝、缺 CSRF 拒绝，`npm run test:mysql` 通过。
-- [ ] 4.6 记录 100 条批量复核的实测耗时，确认未超出网关超时；若超出则下调上限而不是改为并发。验证：实测数值与最终上限写入实施备注。
+- [x] 4.1 在 domain 新增批量入口，接收显式 ID 数组（上限 100，超限抛错）并**顺序**遍历，每个 ID 复用既有单条领域函数（各自开自己的事务），收集 `{ id, ok, code?, message? }` 后一次性返回。禁止并发调用以避免 `pool.getConnection()` 耗尽连接池。验证：单元测试断言上限校验、顺序执行与逐项结果结构。
+- [x] 4.2 批量人工复核必须与单条 `submitManualReview` 语义完全一致，包括 `tighten-review-funnel` 引入的「仅从 `pending_review` 自动推进阶段、单次版本递增」。验证：集成测试断言批量通过 N 个待复核候选后各自进入 `to_contact`、`version` 各 +1、审计与事件各 N 条。
+- [x] 4.3 部分成功语义：构造一个含版本过期目标和一个越权目标的批量请求。验证：集成测试断言其余目标成功、失败目标返回原因、无聚合式回滚，且失败目标的数据完全未变。
+- [x] 4.4 在 `apps/api/src/server.ts` 新增批量复核与批量归档路由，权限 `candidate:write`、CSRF 必填、请求体经 zod 校验且拒绝超限。验证：`apps/api/src/authorization.integration.test.ts` 补三类断言（operator 可用、readonly 拒绝、缺 CSRF 拒绝），`npm run test:mysql` 通过。
+- [x] 4.5 在 `apps/api/src/server.ts` 新增标签写入路由（`PUT /candidates/:id/tags`），权限 `candidate:write`、CSRF 必填、请求体经 zod 校验（标签名 1-100 字、最多 20 个），转调 `setCandidateTags`。原任务清单遗漏了这条路由，但 8.1 的网页标签编辑与 `specs/creator-candidate-library` 的「候选标签维护」都依赖它。验证：`authorization.integration.test.ts` 断言 operator 可用、readonly 拒绝、缺 CSRF 拒绝，`npm run test:mysql` 通过。
+- [x] 4.6 记录 100 条批量复核的实测耗时，确认未超出网关超时；若超出则下调上限而不是改为并发。验证：实测数值与最终上限写入实施备注。实施备注（4.1-4.6）：批量入口为 `packages/domain/src/candidates/candidate-batch.ts` 的 `batchSubmitManualReview` / `batchArchiveCandidates`，顺序 `await`（不用 `Promise.all`，避免一次性占满连接池），逐项复用单条领域函数、各自一个事务，返回 `{ results, succeeded, failed }`；同一批次重复 ID 在校验阶段就拒绝（否则第二次只会表现为版本冲突，误导成并发修改）。上限 100 条实测：本地 Docker MySQL 三次分别 932 / 911 / 655 ms（约 6.5-9.3 ms/条），生产 RDS 同地域按每条 7 次往返、每次 +1 ms 估算约 1.6 s，网关 `infra/production/proxy_params` 为 `proxy_read_timeout 60s`，余量充足，**上限保持 100 不下调**。路由：`POST /candidates/batch-reviews`、`POST /candidates/batch-archive`（形状错误如超限/重复 ID 返回 400 `INVALID_BATCH_REQUEST`，逐项失败走 200 + `results`）、`PUT /candidates/:candidateId/tags`，权限均为 `candidate:write` 且强制 CSRF；`handleCandidateWorkflowError` 增加 `PermissionDeniedError` → 403 映射。
+
+- [x] 4.7 在 `apps/api/src/server.ts` 新增单条归档 / 恢复路由（`POST /candidates/:candidateId/archive` 与 `/unarchive`），权限 `candidate:write`、CSRF 必填，请求体含 `expectedVersion` 与可选 `note`。原任务清单只写了批量归档路由，但 8.2 的「归档 / 恢复入口」在详情页与列表行内都要用到单条路由，因此补上。验证：`authorization.integration.test.ts` 断言缺 CSRF 拒绝、只读拒绝、运营可用且版本冲突返回 409 语义（批量里表现为 `VERSION_CONFLICT` 项）。
 
 ## 5. 成员生命周期（domain + api）
 
