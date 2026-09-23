@@ -33,7 +33,6 @@ export type { AdminBootstrapInput } from './auth/passwords.js';
 export {
   authenticateSession,
   deriveSessionCsrfToken,
-  disableUserAccount,
   InvalidCredentialsError,
   isValidCsrfToken,
   loginWithPassword,
@@ -44,12 +43,22 @@ export {
 } from './auth/sessions.js';
 export type { LoginResult, SessionPrincipal } from './auth/sessions.js';
 export {
+  changeMemberRole,
+  disableUserAccount,
+  enableUserAccount,
+  LastActiveAdminError,
+  SelfDisableError,
+} from './auth/members.js';
+export {
   acceptInvitation,
   createInvitation,
   InvitationAlreadyUsedError,
   InvitationExpiredError,
   InvitationNotFoundError,
+  InvitationRevokedError,
+  listPendingInvitations,
   InvitedEmailAlreadyExistsError,
+  revokeInvitation,
 } from './auth/invitations.js';
 export type { AcceptInvitationResult, CreateInvitationResult } from './auth/invitations.js';
 export {

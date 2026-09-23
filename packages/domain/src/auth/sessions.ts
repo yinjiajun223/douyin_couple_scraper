@@ -3,7 +3,6 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { z } from 'zod';
 
-import { writeAuditEvent } from '../audit/audit-events.js';
 import { hashPassword, verifyPassword } from './passwords.js';
 
 export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
@@ -190,51 +189,6 @@ export async function revokeAllUserSessions(pool: Pool, userId: string): Promise
      WHERE user_id = ?`,
     [userId],
   );
-}
-
-export async function disableUserAccount(
-  pool: Pool,
-  workspaceId: string,
-  userId: string,
-): Promise<void> {
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    const [members] = await connection.query<RowDataPacket[]>(
-      `SELECT user_id FROM memberships
-       WHERE workspace_id = ? AND user_id = ?
-       FOR UPDATE`,
-      [workspaceId, userId],
-    );
-    if (members.length === 0) throw new UserNotFoundError();
-
-    await connection.execute("UPDATE users SET status = 'disabled' WHERE id = ?", [userId]);
-    await connection.execute(
-      `UPDATE sessions SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3))
-       WHERE user_id = ?`,
-      [userId],
-    );
-    await connection.execute(
-      `UPDATE devices
-       SET status = 'revoked', revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3))
-       WHERE owner_user_id = ?`,
-      [userId],
-    );
-    await writeAuditEvent(connection, {
-      workspaceId,
-      actorUserId: userId,
-      action: 'account.disabled',
-      subjectType: 'user',
-      subjectId: userId,
-      summary: { sessionsRevoked: true, devicesRevoked: true },
-    });
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback();
-    throw error;
-  } finally {
-    connection.release();
-  }
 }
 
 function hashToken(token: string): string {

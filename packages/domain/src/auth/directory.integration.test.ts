@@ -6,7 +6,7 @@ import { seedInitialWorkspace } from '../database/seed.js';
 import { bootstrapFirstAdmin } from './bootstrap-admin.js';
 import { listWorkspaceDevices } from './directory.js';
 import { revokeDevice } from './devices.js';
-import { disableUserAccount } from './sessions.js';
+import { disableUserAccount } from './members.js';
 
 const databaseUrl = process.env.MYSQL_TEST_URL;
 const describeWithMysql = databaseUrl ? describe : describe.skip;
@@ -77,7 +77,11 @@ describeWithMysql('采集设备目录', () => {
 
   it('主动撤销与停用级联都写入撤销时间，且不返回令牌材料', async () => {
     await revokeDevice(pool, workspaceId, deviceManual, adminUserId, 'admin');
-    await disableUserAccount(pool, workspaceId, operatorB);
+    await disableUserAccount(pool, {
+      actorUserId: adminUserId,
+      targetUserId: operatorB,
+      workspaceId,
+    });
 
     const devices = await listWorkspaceDevices(pool, workspaceId, adminUserId, 'admin');
     const manual = devices.find((device) => device.id === deviceManual);
