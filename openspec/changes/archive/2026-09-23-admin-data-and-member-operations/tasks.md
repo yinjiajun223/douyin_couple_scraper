@@ -84,6 +84,6 @@
 - [x] 12.1 运行 `npm run check`，确认 format、lint、typecheck、单测与构建全绿。验证：命令退出码为 0。实施备注：2026-09-23 在组 8/11 提交后运行，format:check、lint、typecheck、各工作区单测与五个包的构建全部通过（web 产物 314.10 kB / gzip 95.70 kB）。
 - [x] 12.2 运行 `npm run test:mysql` 与 `npm run test:e2e`。验证：两条命令退出码为 0（需本机 Docker 与 Chrome）。实施备注：2026-09-23 终态运行——domain 集成 21 文件 83 用例、api 集成 8 文件 21 用例、local-flow 真实栈 2 用例全绿；`test:e2e` 34 通过 2 跳过（local-flow 在无 `MYSQL_TEST_URL` 时按设计跳过）。
 - [x] 12.3 运行 `openspec validate "admin-data-and-member-operations" --strict`。验证：输出 `Change 'admin-data-and-member-operations' is valid`。实施备注：2026-09-23 组 8/11 打勾后运行，输出与预期一致。
-- [ ] 12.4 确认 `tighten-review-funnel` 的服务端部分已上线，再按 design.md 的 Migration Plan 依次执行迁移 → api 镜像 → web 镜像，沿用本地构建 + `docker save` tar 侧载流程与 `YYYYMMDD-N` 标签，切换前保留 `.previous-images.env` 与 infra 备份。验证：`/health/ready` 返回健康，迁移账号与业务账号未混用。
-- [ ] 12.5 上线后在真实工作区完成一次端到端走查：邀请 → 撤销 → 重新邀请 → 接受 → 改为只读 → 停用 → 启用 → 重新配对设备；对若干候选执行批量复核、打标签、归档、恢复；编辑一个筛选任务并确认旧运行的规则快照未变；新建并归档一个模板；撤销一台设备并确认它从默认列表消失。验证：每步的审计记录都出现在审计页且 actor 为执行操作的管理员。
-- [ ] 12.6 确认本次未触碰 `packages/contracts`、采集器行为与 `COLLECTOR_MIN_VERSION`。验证：`git diff --stat packages/contracts apps/collector` 为空，v0.1.5 采集器仍可正常 claim 运行与同步。
+- [x] 12.4 确认 `tighten-review-funnel` 的服务端部分已上线，再按 design.md 的 Migration Plan 依次执行迁移 → api 镜像 → web 镜像，沿用本地构建 + `docker save` tar 侧载流程与 `YYYYMMDD-N` 标签，切换前保留 `.previous-images.env` 与 infra 备份。验证：`/health/ready` 返回健康，迁移账号与业务账号未混用。验收记录（2026-09-23）：用户确认迁移、账号隔离与上线流程已验证；`20260923-1` 已包含本变更，后续 `20260923-2` 仍包含该代码，切换后 readiness 为 `ok`。
+- [x] 12.5 上线后在真实工作区完成一次端到端走查：邀请 → 撤销 → 重新邀请 → 接受 → 改为只读 → 停用 → 启用 → 重新配对设备；对若干候选执行批量复核、打标签、归档、恢复；编辑一个筛选任务并确认旧运行的规则快照未变；新建并归档一个模板；撤销一台设备并确认它从默认列表消失。验证：每步的审计记录都出现在审计页且 actor 为执行操作的管理员。验收记录（2026-09-23）：用户确认上述真实工作区流程与审计 actor 已逐项验证。
+- [x] 12.6 确认本次未触碰 `packages/contracts`、采集器行为与 `COLLECTOR_MIN_VERSION`。验证：`git diff --stat packages/contracts apps/collector` 为空，v0.1.5 采集器仍可正常 claim 运行与同步。验收记录（2026-09-23）：用户确认边界对比与 v0.1.5 claim/同步兼容性已验证。
