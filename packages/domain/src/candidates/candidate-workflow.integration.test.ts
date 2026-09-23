@@ -10,6 +10,7 @@ import { PermissionDeniedError } from '../auth/permissions.js';
 import { createMysqlPool, runMigrations } from '../database/migrations.js';
 import { seedInitialWorkspace } from '../database/seed.js';
 import { getOperationsDashboard } from '../dashboard/operations-dashboard.js';
+import { batchArchiveCandidates, batchSubmitManualReview } from './candidate-batch.js';
 import { exportCandidateCsv } from './candidate-export.js';
 import { listCandidates } from './candidate-library.js';
 import {
@@ -738,5 +739,141 @@ describeWithMysql('manual review and outreach workflow', () => {
       [target],
     );
     expect(Number(events[0]?.total)).toBe(0);
+  });
+  it('批量复核与单条语义一致：各自推进阶段、各递增一次版本、事件与审计各一条', async () => {
+    const targets = [
+      await createPendingCandidate('workflow-batch-approve-a'),
+      await createPendingCandidate('workflow-batch-approve-b'),
+      await createPendingCandidate('workflow-batch-approve-c'),
+    ];
+
+    const result = await batchSubmitManualReview(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      decision: 'approved',
+      items: targets.map((candidateId) => ({ candidateId, expectedVersion: 1 })),
+      workspaceId,
+    });
+
+    expect(result.succeeded).toBe(3);
+    expect(result.failed).toBe(0);
+    expect(result.results).toEqual(targets.map((id) => ({ id, ok: true })));
+
+    const [candidates] = await pool.query<RowDataPacket[]>(
+      `SELECT id, pipeline_status, version FROM campaign_candidates WHERE id IN (?, ?, ?)`,
+      targets,
+    );
+    expect(candidates).toHaveLength(3);
+    expect(
+      candidates.every((row) => row.pipeline_status === 'to_contact' && Number(row.version) === 2),
+    ).toBe(true);
+
+    const [totals] = await pool.query<RowDataPacket[]>(
+      `SELECT (SELECT COUNT(*) FROM manual_reviews WHERE candidate_id IN (?, ?, ?))
+            + (SELECT COUNT(*) FROM candidate_events
+                WHERE candidate_id IN (?, ?, ?) AND event_type = 'manual_reviewed')
+            + (SELECT COUNT(*) FROM candidate_events
+                WHERE candidate_id IN (?, ?, ?) AND event_type = 'pipeline_status_changed')
+            + (SELECT COUNT(*) FROM audit_events
+                WHERE subject_id IN (?, ?, ?) AND action = 'candidate.reviewed') AS total`,
+      [...targets, ...targets, ...targets, ...targets],
+    );
+    // 三个候选 x（1 条复核 + 1 条复核事件 + 1 条阶段事件 + 1 条审计）= 12，
+    // 与逐条调用单条领域函数的产物完全一致。
+    expect(Number(totals[0]?.total)).toBe(12);
+  });
+
+  it('批量操作部分成功：失败项原因明确、数据完全未变，成功项不被回滚', async () => {
+    const accepted = await createPendingCandidate('workflow-batch-partial-ok');
+    const stale = await createPendingCandidate('workflow-batch-partial-stale');
+    const missing = randomUUID();
+
+    const result = await batchSubmitManualReview(pool, {
+      actorRole: 'admin',
+      actorUserId,
+      decision: 'approved',
+      items: [
+        { candidateId: accepted, expectedVersion: 1 },
+        { candidateId: stale, expectedVersion: 9 },
+        { candidateId: missing, expectedVersion: 1 },
+      ],
+      workspaceId,
+    });
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(2);
+    expect(result.results).toEqual([
+      { id: accepted, ok: true },
+      { code: 'VERSION_CONFLICT', currentVersion: 1, id: stale, ok: false },
+      { code: 'CANDIDATE_NOT_FOUND', id: missing, ok: false },
+    ]);
+
+    // 成功项照常推进，说明没有聚合式回滚。
+    const [advanced] = await pool.query<RowDataPacket[]>(
+      'SELECT pipeline_status, version FROM campaign_candidates WHERE id = ?',
+      [accepted],
+    );
+    expect(advanced[0]).toMatchObject({ pipeline_status: 'to_contact', version: 2 });
+
+    // 失败项一点痕迹都不留：阶段、版本、复核记录、事件、审计全部为空。
+    const [untouched] = await pool.query<RowDataPacket[]>(
+      `SELECT pipeline_status, version,
+              (SELECT COUNT(*) FROM manual_reviews WHERE candidate_id = ?) AS reviews,
+              (SELECT COUNT(*) FROM candidate_events WHERE candidate_id = ?) AS events,
+              (SELECT COUNT(*) FROM audit_events WHERE subject_id = ?) AS audits
+       FROM campaign_candidates WHERE id = ?`,
+      [stale, stale, stale, stale],
+    );
+    expect(untouched[0]).toMatchObject({
+      audits: 0,
+      events: 0,
+      pipeline_status: 'pending_review',
+      reviews: 0,
+      version: 1,
+    });
+
+    // 越权目标与不存在目标返回同一个码，且同样不留痕迹。
+    const outsiderId = randomUUID();
+    await pool.execute(
+      `INSERT INTO users (id, email, password_hash, display_name)
+       VALUES (?, ?, 'integration-test-only', '批量越权成员')`,
+      [outsiderId, `batch-outsider-${outsiderId}@example.test`],
+    );
+    await pool.execute(
+      `INSERT INTO memberships (workspace_id, user_id, role) VALUES (?, ?, 'operator')`,
+      [workspaceId, outsiderId],
+    );
+    const own = await createPendingCandidate('workflow-batch-partial-own');
+    const foreign = await createPendingCandidate('workflow-batch-partial-foreign');
+    await pool.execute(`UPDATE campaign_candidates SET assignee_user_id = ? WHERE id = ?`, [
+      outsiderId,
+      own,
+    ]);
+
+    const scoped = await batchArchiveCandidates(pool, {
+      actorRole: 'operator',
+      actorUserId: outsiderId,
+      items: [
+        { candidateId: own, expectedVersion: 1 },
+        { candidateId: foreign, expectedVersion: 1 },
+      ],
+      workspaceId,
+    });
+    expect(scoped.results).toEqual([
+      { id: own, ok: true },
+      { code: 'CANDIDATE_NOT_FOUND', id: foreign, ok: false },
+    ]);
+    const [foreignRows] = await pool.query<RowDataPacket[]>(
+      'SELECT archived_at, version FROM campaign_candidates WHERE id = ?',
+      [foreign],
+    );
+    expect(foreignRows[0]?.archived_at).toBeNull();
+    expect(Number(foreignRows[0]?.version)).toBe(1);
+    const [ownRows] = await pool.query<RowDataPacket[]>(
+      'SELECT archived_at, version FROM campaign_candidates WHERE id = ?',
+      [own],
+    );
+    expect(ownRows[0]?.archived_at).toBeInstanceOf(Date);
+    expect(Number(ownRows[0]?.version)).toBe(2);
   });
 });

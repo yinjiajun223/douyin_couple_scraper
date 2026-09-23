@@ -157,6 +157,16 @@ export {
   listCandidatePage,
   listCandidates,
 } from './candidates/candidate-library.js';
+export {
+  BATCH_OPERATION_LIMIT,
+  batchArchiveCandidates,
+  batchSubmitManualReview,
+} from './candidates/candidate-batch.js';
+export type {
+  BatchItemFailureCode,
+  BatchItemResult,
+  BatchResult,
+} from './candidates/candidate-batch.js';
 export type {
   CandidateDetail,
   CandidateListItem,
