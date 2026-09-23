@@ -195,6 +195,8 @@ export interface CandidateDetail {
     pipelineStatus: CandidateRow['pipeline_status'];
     assigneeUserId: string | null;
     archivedAt: Date | null;
+    // 标签编辑面板需要当前真实标签：列表里的副本可能是别人改标签之前的。
+    tags: string[];
     version: number;
   };
   observations: Array<{
@@ -469,6 +471,15 @@ export async function getCandidateDetail(
   const candidate = candidateRows[0];
   if (!candidate) throw new CandidateNotFoundError();
 
+  const [tagRows] = await pool.query<CandidateTagRow[]>(
+    `SELECT candidate_tags.candidate_id, tags.name
+     FROM candidate_tags
+     JOIN tags ON tags.id = candidate_tags.tag_id
+     WHERE candidate_tags.candidate_id = ?
+     ORDER BY tags.name`,
+    [candidateId],
+  );
+
   const assignedToViewer = Boolean(
     scope.targetUserId &&
     (candidate.assignee_user_id === scope.targetUserId ||
@@ -589,6 +600,7 @@ export async function getCandidateDetail(
       pipelineStatus: candidate.pipeline_status,
       assigneeUserId: candidate.assignee_user_id,
       archivedAt: candidate.archived_at,
+      tags: tagRows.map((tag) => tag.name),
       version: candidate.version,
     },
     observations: observations.map((observation) => ({
