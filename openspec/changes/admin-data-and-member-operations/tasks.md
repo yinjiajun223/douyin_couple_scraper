@@ -31,18 +31,18 @@
 
 ## 5. 成员生命周期（domain + api）
 
-- [ ] 5.1 修正 `disableUserAccount`（`sessions.ts:195-238`）的签名与审计 actor，写入执行操作的管理员而非被停用者（当前 :224 写的是 `userId`）。该函数从未被路由调用，无历史数据需要兼容。验证：集成测试断言 `audit_events.actor_user_id` 为管理员 ID，`npm run test:mysql` 通过。
-- [ ] 5.2 新增护栏函数，在同一事务内 `SELECT ... FOR UPDATE` 锁定目标 membership 行后统计该工作区 `role='admin' AND users.status='active'` 的人数：目标为最后一名 admin 时拒绝停用与降级；`actorUserId === targetUserId` 时拒绝停用。验证：集成测试覆盖自我停用、停用最后 admin、降级最后 admin、两名管理员并发互相降级（串行化后第二次失败），`npm run test:mysql` 通过。
-- [ ] 5.3 新增 `enableUserAccount`：置 `users.status='active'`、写 `account.enabled` 审计，**不**触碰 `devices.status`。验证：集成测试断言启用后可登录、其名下设备仍为 `revoked` 且设备令牌调用被拒绝。
-- [ ] 5.4 新增角色变更领域函数：更新 `memberships.role`、写 `account.role_changed` 审计、施加最后管理员护栏。验证：集成测试断言变更即时生效——目标成员**持既有会话**发起写请求时按新角色判定权限（确认 `sessions.ts:127-162` 是每请求解析角色，不依赖重新登录）。
-- [ ] 5.5 在 `apps/api/src/server.ts` 新增停用 / 启用 / 改角色路由，权限 `members:manage`、CSRF 必填。验证：`authorization.integration.test.ts` 断言 operator 与 readonly 均被拒绝、管理员成功、护栏触发时返回可理解原因且无任何部分生效变更。
+- [x] 5.1 修正 `disableUserAccount`（`sessions.ts:195-238`）的签名与审计 actor，写入执行操作的管理员而非被停用者（当前 :224 写的是 `userId`）。该函数从未被路由调用，无历史数据需要兼容。验证：集成测试断言 `audit_events.actor_user_id` 为管理员 ID，`npm run test:mysql` 通过。
+- [x] 5.2 新增护栏函数，在同一事务内 `SELECT ... FOR UPDATE` 锁定目标 membership 行后统计该工作区 `role='admin' AND users.status='active'` 的人数：目标为最后一名 admin 时拒绝停用与降级；`actorUserId === targetUserId` 时拒绝停用。验证：集成测试覆盖自我停用、停用最后 admin、降级最后 admin、两名管理员并发互相降级（串行化后第二次失败），`npm run test:mysql` 通过。
+- [x] 5.3 新增 `enableUserAccount`：置 `users.status='active'`、写 `account.enabled` 审计，**不**触碰 `devices.status`。验证：集成测试断言启用后可登录、其名下设备仍为 `revoked` 且设备令牌调用被拒绝。
+- [x] 5.4 新增角色变更领域函数：更新 `memberships.role`、写 `account.role_changed` 审计、施加最后管理员护栏。验证：集成测试断言变更即时生效——目标成员**持既有会话**发起写请求时按新角色判定权限（确认 `sessions.ts:127-162` 是每请求解析角色，不依赖重新登录）。
+- [x] 5.5 在 `apps/api/src/server.ts` 新增停用 / 启用 / 改角色路由，权限 `members:manage`、CSRF 必填。验证：`authorization.integration.test.ts` 断言 operator 与 readonly 均被拒绝、管理员成功、护栏触发时返回可理解原因且无任何部分生效变更。实施备注（5.1-5.5）：新模块 `packages/domain/src/auth/members.ts`（`disableUserAccount` 从 `sessions.ts` 迁出，签名改为 `{ actorUserId, targetUserId, workspaceId }`，审计 actor 写执行者，summary 改为本次实际撤销的会话数与设备数）。护栏加锁顺序为**先工作区范围加锁计数、后目标行**，三个操作（停用 / 启用 / 改角色）统一走这一顺序：只锁目标行挡不住两名管理员并发互相降级，而顺序不统一会死锁（范围锁的 `JOIN users` 也锁 users 行）——design.md D5 已按实现修正。集成测试用 `Promise.allSettled` 断言并发互相降级恰好一个成功、另一个 `LastActiveAdminError`，且工作区仍有 1 名启用管理员。角色即时生效由 api 测试断言：同一条会话不重新登录，改角色后写请求从 403 变 404。路由 `POST /members/:userId/disable`、`POST /members/:userId/enable`、`PUT /members/:userId/role`，错误映射 404 `MEMBER_NOT_FOUND` / 409 `LAST_ACTIVE_ADMIN`（带中文 message）/ 409 `SELF_DISABLE_NOT_ALLOWED` / 400 `INVALID_MEMBER_REQUEST`。
 
 ## 6. 邀请管理（domain + api）
 
-- [ ] 6.1 在 `packages/domain/src/auth/invitations.ts` 新增 `listPendingInvitations`：返回邮箱、角色、发出时间、过期时间、发出者，**MUST NOT** 返回 `token_hash` 或任何令牌材料。验证：集成测试断言响应对象不含令牌字段，`npm run test:mysql` 通过。
-- [ ] 6.2 新增 `revokeInvitation`：写入撤销时间、写 `account.invitation_revoked` 审计；已接受或已撤销的邀请拒绝再次撤销。验证：集成测试覆盖三种状态。
-- [ ] 6.3 在 `acceptInvitation`（:118）增加撤销校验，抛新的 `InvitationRevokedError`，并在 `server.ts` 的 `POST /auth/invitations/accept` 映射为 HTTP 410 + `INVITATION_REVOKED`（与既有 `InvitationExpiredError` → 410 `INVITATION_EXPIRED` 同风格但可区分）。验证：集成测试断言已撤销邀请无法创建成员记录，且响应码与错误码正确。
-- [ ] 6.4 在 `apps/api/src/server.ts` 新增邀请列表与撤销路由，权限 `members:manage`，撤销要求 CSRF。验证：`authorization.integration.test.ts` 断言非管理员被拒绝。
+- [x] 6.1 在 `packages/domain/src/auth/invitations.ts` 新增 `listPendingInvitations`：返回邮箱、角色、发出时间、过期时间、发出者，**MUST NOT** 返回 `token_hash` 或任何令牌材料。验证：集成测试断言响应对象不含令牌字段，`npm run test:mysql` 通过。
+- [x] 6.2 新增 `revokeInvitation`：写入撤销时间、写 `account.invitation_revoked` 审计；已接受或已撤销的邀请拒绝再次撤销。验证：集成测试覆盖三种状态。
+- [x] 6.3 在 `acceptInvitation`（:118）增加撤销校验，抛新的 `InvitationRevokedError`，并在 `server.ts` 的 `POST /auth/invitations/accept` 映射为 HTTP 410 + `INVITATION_REVOKED`（与既有 `InvitationExpiredError` → 410 `INVITATION_EXPIRED` 同风格但可区分）。验证：集成测试断言已撤销邀请无法创建成员记录，且响应码与错误码正确。
+- [x] 6.4 在 `apps/api/src/server.ts` 新增邀请列表与撤销路由，权限 `members:manage`，撤销要求 CSRF。验证：`authorization.integration.test.ts` 断言非管理员被拒绝。实施备注（6.1-6.4）：`listPendingInvitations` 的 SELECT 里根本没有 `token_hash`，返回 `id / email / role / invitedAt / expiresAt / invitedByDisplayName`；测试断言响应 JSON 既不含令牌明文也不含其 sha256，且键集合固定。`revokeInvitation` 先 `FOR UPDATE` 锁行，已接受 → `InvitationAlreadyUsedError`、已撤销 → `InvitationRevokedError`、不存在或跨工作区 → `InvitationNotFoundError`，写 `account.invitation_revoked` 审计（summary 含 email/role）并保留原始 `expires_at`，使审计能区分自然过期与主动撤销。`acceptInvitation` 的撤销判定放在过期判定之前（原因更有用），映射为 410 `INVITATION_REVOKED`；api 测试断言 410 且未创建任何 users/memberships 行。路由 `GET /invitations`（`members:manage`）与 `POST /invitations/:invitationId/revoke`（`members:manage` + CSRF，重复撤销 409）。
 
 ## 7. 审计类型扩展
 
