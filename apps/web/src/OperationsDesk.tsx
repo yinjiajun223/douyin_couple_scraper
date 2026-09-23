@@ -355,7 +355,12 @@ export function OperationsDesk({
             />
           ) : null}
           {view === 'members' && canManageMembers ? (
-            <MembersPage csrfToken={csrfToken} members={members} />
+            <MembersPage
+              csrfToken={csrfToken}
+              currentUserId={user.id}
+              members={members}
+              onChanged={() => setRefreshKey((key) => key + 1)}
+            />
           ) : null}
           {view === 'devices' && canManageDevices ? (
             <DevicesPage
