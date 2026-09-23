@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { CandidateDetailData, CandidateSummary, Member, Role } from '../types';
-import { readResponse } from '../api/client';
+import type {
+  BatchItemResult,
+  BatchResult,
+  CandidateDetailData,
+  CandidateSummary,
+  Member,
+  Role,
+} from '../types';
+import { ApiError, readResponse } from '../api/client';
 import {
+  BATCH_OPERATION_LIMIT,
   candidateDateOptions,
   candidateSections,
   pipelineStatusOptions,
@@ -54,6 +62,10 @@ export function CandidatesPage({
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [memberUserId, setMemberUserId] = useState('');
+  // 标签筛选是「草稿 + 已应用」两段：每敲一个字就发一次请求会打爆列表接口，
+  // 而回车应用与标签编辑器里的「回车添加」是同一个手势，运营不用重新学。
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagFilter, setTagFilter] = useState('');
   const [visibleCandidates, setVisibleCandidates] = useState<CandidateSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -63,6 +75,13 @@ export function CandidatesPage({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [libraryToken, setLibraryToken] = useState(0);
+  // 「已归档」是独立视图，不是第六个阶段分区：分区轴按跟进阶段切，归档轴按是否还在跟进切。
+  const [archivedView, setArchivedView] = useState(false);
+  // 勾选保留 id → version：批量接口按条做乐观锁校验，列表不返回版本就只能逐条打开详情。
+  const [selected, setSelected] = useState<Map<string, number>>(new Map());
+  const [batchBusy, setBatchBusy] = useState<'' | 'review' | 'archive'>('');
+  const [batchMessage, setBatchMessage] = useState('');
+  const [batchError, setBatchError] = useState('');
   const detailRequest = useRef(0);
   const libraryRequest = useRef(0);
   const keepSelection = useRef(false);
@@ -72,8 +91,10 @@ export function CandidatesPage({
       limit: '50',
       pipelineStatuses: candidateSection.statuses.join(','),
     });
+    if (archivedView) query.set('archiveView', 'archived');
     if (mineOnly) query.set('ownerUserId', currentUserId);
     if (role === 'admin' && memberUserId) query.set('memberUserId', memberUserId);
+    if (tagFilter) query.set('tags', tagFilter);
     const range = candidateDateRange(datePreset, customFrom, customTo);
     if (range.from) query.set('discoveredFrom', range.from);
     if (range.to) query.set('discoveredTo', range.to);
@@ -102,12 +123,18 @@ export function CandidatesPage({
     })
       .then(readResponse<{ candidates: CandidateSummary[]; nextCursor: string | null }>)
       .then((result) => {
-        setVisibleCandidates(
-          result.candidates.filter((candidate) =>
-            candidateMatchesLibraryView(candidate, candidateSection.value, mineOnly, currentUserId),
-          ),
+        const loaded = result.candidates.filter((candidate) =>
+          candidateMatchesLibraryView(candidate, candidateSection.value, mineOnly, currentUserId),
         );
+        setVisibleCandidates(loaded);
         setNextCursor(result.nextCursor ?? null);
+        // 勾选必须跟着列表走：离开当前视图的达人若留在勾选里，
+        // 它携带的版本号也已过期，批量提交时只会变成一条莫名的版本冲突。
+        const loadedIds = new Set(loaded.map((candidate) => candidate.id));
+        setSelected((current) => {
+          const pruned = new Map([...current].filter(([id]) => loadedIds.has(id)));
+          return pruned.size === current.size ? current : pruned;
+        });
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -117,7 +144,17 @@ export function CandidatesPage({
         if (!controller.signal.aborted) setLibraryLoading(false);
       });
     return () => controller.abort();
-  }, [candidateSection, customFrom, customTo, datePreset, libraryToken, memberUserId, preset]);
+  }, [
+    archivedView,
+    candidateSection,
+    customFrom,
+    customTo,
+    datePreset,
+    libraryToken,
+    memberUserId,
+    preset,
+    tagFilter,
+  ]);
 
   async function loadMoreCandidates() {
     if (!nextCursor || libraryLoading) return;
@@ -195,6 +232,112 @@ export function CandidatesPage({
     void openCandidate(candidateId);
   }
 
+  function toggleSelected(candidate: CandidateSummary) {
+    setSelected((current) => {
+      const next = new Map(current);
+      if (next.has(candidate.id)) next.delete(candidate.id);
+      else next.set(candidate.id, candidate.version);
+      return next;
+    });
+    setBatchMessage('');
+    setBatchError('');
+  }
+
+  function selectAllVisible() {
+    setSelected(new Map(visibleCandidates.map((candidate) => [candidate.id, candidate.version])));
+    setBatchMessage('');
+    setBatchError('');
+  }
+
+  function switchArchivedView(next: boolean) {
+    if (next === archivedView) return;
+    setArchivedView(next);
+    setSelected(new Map());
+    setSelectedCandidateId(null);
+    setDetail(null);
+    setBatchMessage('');
+    setBatchError('');
+  }
+
+  /** 回车才应用：标签名支持中英文逗号分隔，最多 20 个（与服务端 tagNames 上限一致）。 */
+  function applyTagFilter() {
+    const next = tagDraft
+      .split(/[,，]/u)
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 20)
+      .join(',');
+    setTagDraft(next);
+    setTagFilter(next);
+  }
+
+  /**
+   * 批量提交只带用户实际勾选的 ID 与其版本号，服务端不会按当前筛选条件展开。
+   * 部分成功是接口的既定语义：逐条结果原样回报，不做乐观 UI，提交期间整条操作栏禁用。
+   */
+  async function runBatch(kind: 'review' | 'archive') {
+    if (batchBusy || selected.size === 0) return;
+    const items = [...selected].map(([candidateId, expectedVersion]) => ({
+      candidateId,
+      expectedVersion,
+    }));
+    setBatchBusy(kind);
+    setBatchMessage('');
+    setBatchError('');
+    try {
+      const response = await fetch(
+        kind === 'review' ? '/candidates/batch-reviews' : '/candidates/batch-archive',
+        {
+          body: JSON.stringify(kind === 'review' ? { decision: 'approved', items } : { items }),
+          credentials: 'include',
+          headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+          method: 'POST',
+        },
+      );
+      const result = await readResponse<BatchResult>(response);
+      const failures = result.results.filter((item) => !item.ok);
+      const verb = kind === 'review' ? '复核通过' : '归档';
+      setBatchMessage(
+        failures.length
+          ? `已${verb} ${result.succeeded} 条，${failures.length} 条未处理：${describeBatchFailures(failures)}`
+          : `已${verb} ${result.succeeded} 条。`,
+      );
+      setSelected(new Map());
+      setLibraryToken((current) => current + 1);
+    } catch (error) {
+      setBatchError(
+        error instanceof ApiError
+          ? error.message
+          : '网络连接失败，本次批量操作未确认结果，请刷新列表后再试。',
+      );
+    } finally {
+      setBatchBusy('');
+    }
+  }
+
+  async function restoreCandidate(candidate: CandidateSummary) {
+    setBatchBusy('archive');
+    setBatchMessage('');
+    setBatchError('');
+    try {
+      const response = await fetch(`/candidates/${candidate.id}/unarchive`, {
+        body: JSON.stringify({ expectedVersion: candidate.version }),
+        credentials: 'include',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+        method: 'POST',
+      });
+      await readResponse<{ id: string; version: number }>(response);
+      setBatchMessage(`已恢复「${candidate.nickname}」，它会按当前阶段回到在用列表。`);
+      setLibraryToken((current) => current + 1);
+    } catch (error) {
+      setBatchError(
+        error instanceof ApiError ? error.message : '网络连接失败，恢复未确认，请刷新列表后再试。',
+      );
+    } finally {
+      setBatchBusy('');
+    }
+  }
+
   return (
     <section>
       <header className="section-page-header">
@@ -222,6 +365,94 @@ export function CandidatesPage({
           </button>
         ))}
       </div>
+
+      <div className="candidate-archive-switch" aria-label="归档视图" role="group">
+        <button
+          aria-pressed={!archivedView}
+          onClick={() => switchArchivedView(false)}
+          type="button"
+        >
+          在用列表
+        </button>
+        <button aria-pressed={archivedView} onClick={() => switchArchivedView(true)} type="button">
+          已归档
+        </button>
+        <small>
+          {archivedView
+            ? '已归档的达人不计入待办统计、工作台计数与导出，可以在这里查看并恢复。'
+            : '归档是移除达人的唯一方式：不删除任何采集事实与证据，随时可以恢复。'}
+        </small>
+      </div>
+
+      {canWrite ? (
+        <div className="candidate-batch-bar">
+          {archivedView ? (
+            <p className="muted-copy">
+              已归档视图逐条恢复；批量复核与批量归档在「在用列表」里进行。
+            </p>
+          ) : (
+            <>
+              <label className="candidate-batch-toggle">
+                <input
+                  checked={
+                    visibleCandidates.length > 0 && selected.size === visibleCandidates.length
+                  }
+                  disabled={batchBusy !== '' || visibleCandidates.length === 0}
+                  onChange={(event) =>
+                    event.target.checked ? selectAllVisible() : setSelected(new Map())
+                  }
+                  type="checkbox"
+                />
+                选择本页全部
+              </label>
+              <strong aria-live="polite">已选 {selected.size} 条</strong>
+              <button
+                className="primary-action"
+                disabled={
+                  batchBusy !== '' || selected.size === 0 || selected.size > BATCH_OPERATION_LIMIT
+                }
+                onClick={() => void runBatch('review')}
+                type="button"
+              >
+                {batchBusy === 'review' ? `正在提交 ${selected.size} 条…` : '批量通过复核'}
+              </button>
+              <button
+                className="secondary-action"
+                disabled={
+                  batchBusy !== '' || selected.size === 0 || selected.size > BATCH_OPERATION_LIMIT
+                }
+                onClick={() => void runBatch('archive')}
+                type="button"
+              >
+                {batchBusy === 'archive' ? `正在提交 ${selected.size} 条…` : '批量归档'}
+              </button>
+              <button
+                disabled={batchBusy !== '' || selected.size === 0}
+                onClick={() => setSelected(new Map())}
+                type="button"
+              >
+                清空选择
+              </button>
+              <small>
+                {selected.size > BATCH_OPERATION_LIMIT
+                  ? `一次最多 ${BATCH_OPERATION_LIMIT} 条，请分批提交。`
+                  : `一次最多 ${BATCH_OPERATION_LIMIT} 条；只提交你勾选的达人，服务端不会按筛选条件展开。`}
+              </small>
+            </>
+          )}
+        </div>
+      ) : null}
+
+      {batchMessage ? (
+        <p className="workflow-current" role="status">
+          {batchMessage}
+        </p>
+      ) : null}
+      {batchError ? (
+        <p className="form-error" role="alert">
+          {batchError}
+        </p>
+      ) : null}
 
       <div className="candidate-library-filters" aria-label="达人库筛选">
         <div className="candidate-filter-intro">
@@ -257,6 +488,32 @@ export function CandidatesPage({
             </label>
           </>
         ) : null}
+        <label className="candidate-filter-field candidate-tag-filter">
+          <span className="candidate-filter-label">标签</span>
+          <input
+            aria-label="按标签筛选"
+            onChange={(event) => setTagDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              applyTagFilter();
+            }}
+            placeholder="标签名，多个用逗号分隔，回车筛选"
+            value={tagDraft}
+          />
+        </label>
+        {tagFilter ? (
+          <button
+            className="candidate-tag-filter-clear"
+            onClick={() => {
+              setTagDraft('');
+              setTagFilter('');
+            }}
+            type="button"
+          >
+            清除标签筛选：{tagFilter}
+          </button>
+        ) : null}
         {role === 'admin' ? (
           <FilterSelect
             label="运营成员"
@@ -291,26 +548,47 @@ export function CandidatesPage({
                   <span>{group.candidates.length} 位</span>
                 </div>
                 {group.candidates.map((candidate) => (
-                  <button
-                    aria-pressed={selectedCandidateId === candidate.id}
-                    className={`candidate-list-item ${selectedCandidateId === candidate.id ? 'candidate-list-item-active' : ''}`}
-                    key={candidate.id}
-                    onClick={() => void openCandidate(candidate.id)}
-                    type="button"
-                  >
-                    <span className="candidate-avatar">{candidate.nickname.slice(0, 1)}</span>
-                    <span>
-                      <strong>{candidate.nickname}</strong>
-                      <small>
-                        {candidate.campaignName} · {formatFollowerCount(candidate.followerCount)}{' '}
-                        粉丝
-                      </small>
-                      <em>{candidate.tags.join(' · ') || '暂无标签'}</em>
-                    </span>
-                    <b className="candidate-stage">
-                      {pipelineStatusLabel(candidate.pipelineStatus)}
-                    </b>
-                  </button>
+                  <div className="candidate-list-row" key={candidate.id}>
+                    {canWrite && !archivedView ? (
+                      <input
+                        aria-label={`选择${candidate.nickname}`}
+                        checked={selected.has(candidate.id)}
+                        className="candidate-select"
+                        disabled={batchBusy !== ''}
+                        onChange={() => toggleSelected(candidate)}
+                        type="checkbox"
+                      />
+                    ) : null}
+                    <button
+                      aria-pressed={selectedCandidateId === candidate.id}
+                      className={`candidate-list-item ${selectedCandidateId === candidate.id ? 'candidate-list-item-active' : ''}`}
+                      onClick={() => void openCandidate(candidate.id)}
+                      type="button"
+                    >
+                      <span className="candidate-avatar">{candidate.nickname.slice(0, 1)}</span>
+                      <span>
+                        <strong>{candidate.nickname}</strong>
+                        <small>
+                          {candidate.campaignName} · {formatFollowerCount(candidate.followerCount)}{' '}
+                          粉丝
+                        </small>
+                        <em>{candidate.tags.join(' · ') || '暂无标签'}</em>
+                      </span>
+                      <b className="candidate-stage">
+                        {pipelineStatusLabel(candidate.pipelineStatus)}
+                      </b>
+                    </button>
+                    {canWrite && archivedView ? (
+                      <button
+                        className="candidate-row-action"
+                        disabled={batchBusy !== ''}
+                        onClick={() => void restoreCandidate(candidate)}
+                        type="button"
+                      >
+                        恢复
+                      </button>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             ))}
@@ -396,6 +674,26 @@ async function readErrorCode(response: Response) {
   }
 }
 
+const BATCH_FAILURE_LABELS: Record<string, string> = {
+  CANDIDATE_NOT_FOUND: '已不在你的可见范围',
+  INVALID_INPUT: '提交数据不合法',
+  INVALID_PIPELINE_TRANSITION: '当前阶段不允许',
+  PERMISSION_DENIED: '没有操作权限',
+  VERSION_CONFLICT: '已被同事修改',
+};
+
+/** 批量结果按原因归并成一句话：运营要的是「哪几条为什么没成」，不是逐条 ID。 */
+function describeBatchFailures(failures: BatchItemResult[]) {
+  const counts = new Map<string, number>();
+  for (const failure of failures) {
+    const code = failure.code ?? '';
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([code, count]) => `${BATCH_FAILURE_LABELS[code] ?? '处理失败'} ${count} 条`)
+    .join('；');
+}
+
 export function CandidateDetailView({
   detail,
   canWrite,
@@ -416,6 +714,72 @@ export function CandidateDetailView({
   const [assignees, setAssignees] = useState<Array<{ id: string; displayName: string }>>([]);
   const [assigneesLoaded, setAssigneesLoaded] = useState(false);
   const [ownerUserId, setOwnerUserId] = useState(detail.workflow?.outreach?.ownerUserId ?? '');
+  // 标签与归档确认都是本地待提交状态：保存成功后详情会重拉，这里跟着重置，
+  // 免得把同事刚改过的标签又提交回去。
+  const [tags, setTags] = useState<string[]>(detail.candidate.tags ?? []);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagMessage, setTagMessage] = useState('');
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [archiveNote, setArchiveNote] = useState('');
+  const [archiveMessage, setArchiveMessage] = useState('');
+  const isArchived = Boolean(detail.candidate.archivedAt);
+  const candidateVersion = detail.candidate.version ?? detail.workflow?.candidateVersion ?? 1;
+  const savedTags = detail.candidate.tags ?? [];
+  const tagsChanged =
+    tags.length !== savedTags.length ||
+    [...tags].sort().some((tag, index) => tag !== [...savedTags].sort()[index]);
+  useEffect(() => {
+    setTags(detail.candidate.tags ?? []);
+    setTagDraft('');
+    setConfirmArchive(false);
+    setArchiveNote('');
+  }, [detail]);
+
+  function addTagDraft() {
+    const name = tagDraft.trim();
+    if (!name) return;
+    if (tags.includes(name)) {
+      setTagMessage(`标签「${name}」已经在这位达人上了。`);
+      setTagDraft('');
+      return;
+    }
+    if (tags.length >= 20) {
+      setTagMessage('一位达人最多 20 个标签，请先移除一些再添加。');
+      return;
+    }
+    setTagMessage('');
+    setTags((current) => [...current, name]);
+    setTagDraft('');
+  }
+
+  async function saveTags() {
+    setTagMessage('');
+    const result = await submitRequest(`/candidates/${detail.candidate.id}/tags`, { tags }, 'PUT');
+    setTagMessage(result.ok ? '标签已保存，达人库可以按这些标签筛选。' : result.message);
+  }
+
+  async function toggleArchive() {
+    setArchiveMessage('');
+    const result = await submitRequest(
+      `/candidates/${detail.candidate.id}/${isArchived ? 'unarchive' : 'archive'}`,
+      {
+        expectedVersion: candidateVersion,
+        note: archiveNote.trim() || null,
+      },
+    );
+    if (result.ok) {
+      setConfirmArchive(false);
+      setArchiveNote('');
+      setArchiveMessage(
+        isArchived
+          ? '已恢复到在用列表，它会按当前合作阶段重新出现。'
+          : '已归档：这位达人离开达人库与待办统计，采集事实与证据都保留，随时可以在「已归档」里恢复。',
+      );
+      return;
+    }
+    setArchiveMessage(result.message);
+  }
+
   const mediaKey = (detail.media ?? []).map((media) => media.id).join(',');
   useEffect(() => {
     // 截图是复核的主要依据，打开详情就一次性预取全部签名地址，避免逐张点击等待。
@@ -459,14 +823,14 @@ export function CandidateDetailView({
     return () => controller.abort();
   }, [canWrite]);
 
-  async function submitWorkflowRequest(
+  /** 返回失败原因，让每个表单把错误显示在自己旁边，而不是统一堆到复核区。 */
+  async function submitRequest(
     path: string,
     body: Record<string, unknown>,
     method = 'POST',
-  ) {
-    if (saving) return false;
+  ): Promise<{ message: string; ok: boolean }> {
+    if (saving) return { message: '', ok: false };
     setSaving(true);
-    setWorkflowMessage('');
     try {
       const response = await fetch(path, {
         body: JSON.stringify(body),
@@ -474,18 +838,28 @@ export function CandidateDetailView({
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
         method,
       });
-      if (!response.ok) {
-        setWorkflowMessage(await describeWorkflowFailure(response));
-        return false;
-      }
+      if (!response.ok) return { message: await describeWorkflowFailure(response), ok: false };
       onSaved();
-      return true;
+      return { message: '', ok: true };
     } catch {
-      setWorkflowMessage('网络连接失败，尚未确认保存。请重新打开达人确认状态后重试。');
-      return false;
+      return {
+        message: '网络连接失败，尚未确认保存。请重新打开达人确认状态后重试。',
+        ok: false,
+      };
     } finally {
       setSaving(false);
     }
+  }
+
+  async function submitWorkflowRequest(
+    path: string,
+    body: Record<string, unknown>,
+    method = 'POST',
+  ) {
+    setWorkflowMessage('');
+    const result = await submitRequest(path, body, method);
+    setWorkflowMessage(result.message);
+    return result.ok;
   }
 
   async function loadPrivateImage(mediaId: string) {
@@ -515,6 +889,60 @@ export function CandidateDetailView({
           </a>
         ) : null}
       </header>
+
+      {canWrite ? (
+        <div className="candidate-archive-actions">
+          {isArchived ? (
+            <p className="workflow-current">
+              这位达人已归档，不在达人库与待办统计里；采集事实与证据仍然保留。
+            </p>
+          ) : null}
+          {confirmArchive ? (
+            <div className="campaign-confirm-strip">
+              <span>
+                归档「{latest?.nickname ?? detail.candidate.campaignName}」？归档后它离开达人库、
+                分区与待办统计，但不删除任何数据，可以在「已归档」视图里恢复。
+              </span>
+              <input
+                aria-label="归档原因（可选）"
+                maxLength={500}
+                onChange={(event) => setArchiveNote(event.target.value)}
+                placeholder="归档原因（可选，会留在候选事件历史里）"
+                value={archiveNote}
+              />
+              <div className="campaign-confirm-actions">
+                <button
+                  className="secondary-action"
+                  disabled={saving}
+                  onClick={() => void toggleArchive()}
+                  type="button"
+                >
+                  {saving ? '正在归档…' : '确认归档'}
+                </button>
+                <button disabled={saving} onClick={() => setConfirmArchive(false)} type="button">
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="candidate-archive-buttons">
+              <button
+                className={isArchived ? 'primary-action' : 'secondary-action'}
+                disabled={saving}
+                onClick={() => (isArchived ? void toggleArchive() : setConfirmArchive(true))}
+                type="button"
+              >
+                {isArchived ? (saving ? '正在恢复…' : '恢复到在用列表') : '归档该达人'}
+              </button>
+            </div>
+          )}
+          {archiveMessage ? (
+            <p className="workflow-current" role="status">
+              {archiveMessage}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {(detail.media ?? []).length ? (
         <section className="candidate-detail-section" aria-labelledby="private-media-title">
@@ -621,6 +1049,75 @@ export function CandidateDetailView({
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="candidate-detail-section" aria-labelledby="candidate-tags-title">
+        <div className="detail-section-heading">
+          <div>
+            <h3 id="candidate-tags-title">标签</h3>
+            <small>全团队共用同一套标签名，达人库可按标签筛选</small>
+          </div>
+          <span>{tags.length} 个</span>
+        </div>
+        {tags.length ? (
+          <ul className="tag-chip-list">
+            {tags.map((tag) => (
+              <li key={tag}>
+                <span className="tag-chip">{tag}</span>
+                {canWrite ? (
+                  <button
+                    aria-label={`移除标签${tag}`}
+                    disabled={saving}
+                    onClick={() => {
+                      setTagMessage('');
+                      setTags((current) => current.filter((item) => item !== tag));
+                    }}
+                    type="button"
+                  >
+                    移除
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted-copy">还没有标签。</p>
+        )}
+        {canWrite ? (
+          <form
+            className="tag-editor"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveTags();
+            }}
+          >
+            <input
+              aria-label="新标签名"
+              maxLength={100}
+              onChange={(event) => setTagDraft(event.target.value)}
+              onKeyDown={(event) => {
+                // 回车是「加一个标签」，不是「提交整组」：运营通常连着敲好几个。
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  addTagDraft();
+                }
+              }}
+              placeholder="输入标签名后回车添加"
+              value={tagDraft}
+            />
+            <button disabled={saving || !tagDraft.trim()} onClick={addTagDraft} type="button">
+              添加
+            </button>
+            <button className="primary-action" disabled={saving || !tagsChanged} type="submit">
+              {saving ? '正在保存…' : '保存标签'}
+            </button>
+          </form>
+        ) : null}
+        {tagMessage ? (
+          <p className="workflow-current" role="status">
+            {tagMessage}
+          </p>
+        ) : null}
       </section>
 
       <section className="candidate-detail-section" aria-labelledby="manual-review-title">
@@ -852,14 +1349,17 @@ export function CandidateDetailView({
               <li key={event.id}>
                 <strong>{event.actorDisplayName ?? '系统'}</strong>
                 <time>{formatRunTime(event.createdAt)}</time>
-                <p>
+                <p title={event.eventType}>
                   {event.eventType === 'pipeline_status_changed'
                     ? `${pipelineStatusLabel(event.previousStatus ?? '')} → ${pipelineStatusLabel(event.nextStatus ?? '')}`
                     : ({
                         manual_reviewed: '提交人工复核',
                         outreach_updated: '更新联系资料',
                         note_added: '追加沟通记录',
-                      }[event.eventType] ?? event.eventType)}
+                        archived: '归档达人',
+                        unarchived: '恢复达人',
+                        tags_changed: '更新标签',
+                      }[event.eventType] ?? '其他操作')}
                 </p>
               </li>
             ))}

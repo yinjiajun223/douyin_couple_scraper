@@ -65,6 +65,10 @@ export const memberRoleOptions = [
   { label: '管理员', value: 'admin' },
 ] as const;
 
+// 与服务端 `BATCH_OPERATION_LIMIT`（packages/domain/src/candidates/candidate-batch.ts）一致：
+// 超限服务端会整体拒绝，界面提前拦住，运营才不会白等一次往返。
+export const BATCH_OPERATION_LIMIT = 100;
+
 export const EVIDENCE_ZOOM_MIN = 1;
 export const EVIDENCE_ZOOM_MAX = 4;
 export const EVIDENCE_ZOOM_STEP = 0.25;

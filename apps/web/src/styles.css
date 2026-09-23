@@ -256,6 +256,8 @@ h3 {
 .workspace-fill > section > header,
 .workspace-fill > section > p,
 .workspace-fill > section > .candidate-library-switcher,
+.workspace-fill > section > .candidate-archive-switch,
+.workspace-fill > section > .candidate-batch-bar,
 .workspace-fill > section > .candidate-library-filters {
   flex: 0 0 auto;
 }
@@ -641,6 +643,18 @@ textarea:focus {
   gap: 16px;
   padding: 18px 20px;
   border-top: 1px solid #e7eaf0;
+}
+/* 成员行多了一列操作区（角色选择 + 停用/启用），比设备行宽一格。 */
+.member-entry {
+  display: grid;
+}
+.member-entry > .member-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+}
+.member-guard-note {
+  grid-column: 2 / -1;
+  color: var(--graphite);
+  font-size: 11px;
 }
 .member-row:hover,
 .device-row:hover {
@@ -1268,6 +1282,28 @@ textarea:focus {
   gap: 7px;
   min-width: 0;
 }
+/* 标签筛选是「回车应用」而不是边打字边请求，所以给一个占位说明与一个可见的清除按钮。 */
+.candidate-tag-filter input::placeholder {
+  color: #8b95a7;
+  font-weight: 600;
+}
+.candidate-tag-filter-clear {
+  align-self: end;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px dashed #b6bfce;
+  border-radius: 6px;
+  color: var(--graphite);
+  background: white;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.candidate-tag-filter-clear:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
 .candidate-filter-label {
   color: var(--graphite);
   font-size: 10px;
@@ -1443,6 +1479,191 @@ textarea:focus {
 .candidate-load-more:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+.candidate-archive-switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.candidate-archive-switch button {
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--graphite);
+  background: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.candidate-archive-switch button[aria-pressed='true'] {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: #dfe6ef;
+}
+.candidate-archive-switch small {
+  flex: 1 1 260px;
+  color: var(--graphite);
+  font-size: 11px;
+}
+.candidate-batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--mint);
+  border-radius: 10px;
+  background: #f6f9f7;
+  font-size: 12px;
+}
+.candidate-batch-bar > strong {
+  font-size: 12px;
+}
+.candidate-batch-bar button {
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.candidate-batch-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.candidate-batch-bar small {
+  flex: 1 1 220px;
+  color: var(--graphite);
+  font-size: 11px;
+}
+.candidate-batch-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--graphite);
+  font-size: 12px;
+}
+/* 全局 input 是 48px 高的文本框样式，勾选框必须自己收回来，否则操作栏里会出现一个大方块。 */
+.candidate-batch-toggle input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.candidate-list-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.candidate-list-row > .candidate-list-item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.candidate-select {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 17px;
+  height: 17px;
+  margin-left: 4px;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.candidate-select:disabled {
+  cursor: wait;
+}
+.candidate-row-action {
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.candidate-row-action:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.candidate-archive-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.candidate-archive-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.tag-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tag-chip-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f2f5f9;
+}
+.tag-chip {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+.tag-chip-list button {
+  min-height: 0;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--graphite);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+.tag-chip-list button:hover {
+  color: var(--ink);
+  background: #e2e8f0;
+}
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.tag-editor input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper, white);
+  font: inherit;
+  font-size: 12px;
 }
 .candidate-list-item {
   display: grid;

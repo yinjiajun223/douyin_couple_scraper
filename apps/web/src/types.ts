@@ -88,6 +88,9 @@ export interface ObservedCreatorVerdict {
 export interface CandidateSummary {
   id: string;
   campaignName: string;
+  // 批量复核与批量归档按条携带 expectedVersion，列表不返回版本就只能逐条打开详情。
+  version: number;
+  archivedAt: string | null;
   nickname: string;
   biography: string | null;
   profileUrl: string;
@@ -114,6 +117,8 @@ export interface CandidateDetailData {
     campaignName: string;
     pipelineStatus: string;
     version?: number;
+    archivedAt?: string | null;
+    tags?: string[];
   };
   observations: Array<{
     id: string;
@@ -239,4 +244,35 @@ export interface AuditEventSummary {
   subjectType: string;
   actorUserId: string | null;
   createdAt: string;
+}
+
+export type BatchItemFailureCode =
+  | 'CANDIDATE_NOT_FOUND'
+  | 'INVALID_INPUT'
+  | 'INVALID_PIPELINE_TRANSITION'
+  | 'PERMISSION_DENIED'
+  | 'VERSION_CONFLICT';
+
+export interface BatchItemResult {
+  id: string;
+  ok: boolean;
+  code?: BatchItemFailureCode;
+  currentVersion?: number;
+  from?: string;
+  to?: string;
+}
+
+export interface BatchResult {
+  results: BatchItemResult[];
+  succeeded: number;
+  failed: number;
+}
+
+export interface PendingInvitation {
+  id: string;
+  email: string;
+  role: Role;
+  invitedAt: string;
+  expiresAt: string;
+  invitedByDisplayName: string | null;
 }
