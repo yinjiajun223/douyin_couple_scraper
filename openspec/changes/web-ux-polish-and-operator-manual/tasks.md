@@ -21,6 +21,6 @@
 ## 5. 验证与发布
 
 - [x] 5.1 运行 `npm run check` 与 `npm run test:mysql`、`npm run test:e2e`，并 `openspec validate "web-ux-polish-and-operator-manual" --strict`。验证：退出码 0 / 输出 valid。
-- [ ] 5.2 构建 `20260923-2` 三个镜像（`--build-arg RELEASE_ID=<sha>`），跑 `scripts/test-production-images.ps1` 冒烟门禁，`docker save` 单 tar + 裸文件名 sha256，按既有 runbook 交付服务器步骤（仅换 tag，无迁移、无 infra 变更）。验证：门禁与 grype 通过，tar 校验和在服务器 `sha256sum -c` 为 OK。
+- [x] 5.2 构建 `20260923-2` 三个镜像（`--build-arg RELEASE_ID=<sha>`），跑 `scripts/test-production-images.ps1` 冒烟门禁，`docker save` 单 tar + 裸文件名 sha256，按既有 runbook 交付服务器步骤（仅换 tag，无迁移、无 infra 变更）。验证：门禁与 grype 通过，tar 校验和在服务器 `sha256sum -c` 为 OK。
 
-  本地交付准备记录（2026-09-23）：以 revision `1fffb80c3f31` 构建三个 `20260923-2` 镜像；生产镜像 smoke compose 全部 healthy，Grype 三镜像均为 `No vulnerabilities found`；已生成单包 `release/douyin-ops-images-20260923-2-bundle.tar` 及裸文件名校验文件，本地重算 SHA-256 为 `4b0bedf39a6cdd2cb776c9158f47650e71cdfd0cc58ff41895dae3f5d467e0a9` 并通过。待完成服务器传输与 `sha256sum -c` 后再勾选本项；本轮未执行生产连接、镜像切换、迁移或 infra 变更。
+  上线记录（2026-09-23）：以 revision `1fffb80c3f31` 构建三个 `20260923-2` 镜像；生产镜像 smoke compose 全部 healthy，Grype 三镜像均为 `No vulnerabilities found`；单包 `release/douyin-ops-images-20260923-2-bundle.tar` 在本地与服务器端重算 SHA-256 均为 `4b0bedf39a6cdd2cb776c9158f47650e71cdfd0cc58ff41895dae3f5d467e0a9`，服务器 `sha256sum -c` 返回 `OK`。切换前已保留 `.env.production.prev-20260923-2` 与 `.previous-images.env.prev-20260923-2`，回滚镜像记录为 `20260923-1`。仅更新 API/worker/Web 镜像 tag 并强制重建 gateway，未执行数据库迁移或 infra 变更。切换后 API/Web healthy，worker/gateway 正常运行且重启计数均为 0；使用服务器公开证书严格验证 HTTPS，`/health/live` 与 `/health/ready` 均为 `ok`，MySQL/OSS 均为 `up`，首页返回 200，近 10 分钟 API/worker/gateway 无 error/fatal 关键日志。
