@@ -51,10 +51,10 @@
 
 ## 8. 前端
 
-- [ ] 8.1 在 `apps/web/src/types.ts` 补类型，在各页面沿用既有写法直接 `fetch` + `readResponse`（仓库没有 `src/lib/api.ts` 这样的集中封装层，不要新建）：归档 / 恢复、批量复核、批量归档、标签写入、成员停用 / 启用 / 改角色、邀请列表 / 撤销。`readResponse`（`src/api/client.ts`）目前把所有非 401 错误压成同一句文案，需让调用方能区分护栏拒绝、版本冲突与批量部分失败。验证：`npm run typecheck -w @douyin/web` 通过。
-- [ ] 8.2 在 `apps/web/src/pages/CandidatesPage.tsx` 补多选与批量操作栏（提交期间禁用并显示进度，不做乐观 UI）、归档 / 恢复入口、标签编辑，以及独立的「已归档」视图。批量选择 MUST 只提交用户实际勾选的 ID，不得由服务端展开筛选条件。验证：`npm run build -w @douyin/web` 通过，浏览器走查批量复核 5 条、批量归档 3 条、恢复 1 条、打标签与按标签筛选各一次。
-- [ ] 8.3 在 `apps/web/src/pages/MembersPage.tsx` 补角色变更、停用 / 启用、邀请列表与撤销，并在护栏触发时呈现禁用态与说明文案（不能停用自己、不能停用或降级最后一名管理员）。停用与降级需二次确认。验证：浏览器走查四种护栏态的文案与禁用表现，并确认非管理员看不到这些操作。
-- [ ] 8.4 确认 `GET /members/assignable`（`server.ts:646-655`）已过滤 `status === 'active'`，因此被停用成员不会出现在归属人下拉中。验证：浏览器走查归属人下拉不含已停用成员。
+- [x] 8.1 在 `apps/web/src/types.ts` 补类型，在各页面沿用既有写法直接 `fetch` + `readResponse`（仓库没有 `src/lib/api.ts` 这样的集中封装层，不要新建）：归档 / 恢复、批量复核、批量归档、标签写入、成员停用 / 启用 / 改角色、邀请列表 / 撤销。`readResponse`（`src/api/client.ts`）目前把所有非 401 错误压成同一句文案，需让调用方能区分护栏拒绝、版本冲突与批量部分失败。验证：`npm run typecheck -w @douyin/web` 通过。实施备注：`readResponse` 改为抛 `ApiError`（含 status/body/code），新增 `describeApiError(status, body)` 把已知错误码映射成中文（`LAST_ACTIVE_ADMIN`、`SELF_DISABLE_NOT_ALLOWED`、`INVALID_PIPELINE_TRANSITION` 直接显示服务端 message；批量部分失败不走错误通道，走 200 + `results`）。
+- [x] 8.2 在 `apps/web/src/pages/CandidatesPage.tsx` 补多选与批量操作栏（提交期间禁用并显示进度，不做乐观 UI）、归档 / 恢复入口、标签编辑，以及独立的「已归档」视图。批量选择 MUST 只提交用户实际勾选的 ID，不得由服务端展开筛选条件。验证：`npm run build -w @douyin/web` 通过，浏览器走查批量复核 5 条、批量归档 3 条、恢复 1 条、打标签与按标签筛选各一次。实施备注：勾选状态是 `Map<id, version>`，列表不返回版本就只能逐条开详情；切换分区 / 归档视图 / 筛选时勾选收敛到当前列表，避免提交看不见的达人。走查中发现并修掉两个真实缺口：其一，`GET /candidates` 路由从不透传 `archiveView`，「已归档」视图会静默返回在用列表，已在 `apps/api/src/server.ts` 补上（只认精确的 `archived`，其余取值回落在用视图），并在 `authorization.integration.test.ts` 从 HTTP 入口断言；其二，标签检索的服务端能力（`tagNames`）早已存在但界面从未发送，补了筛选栏的「标签」输入框（回车应用、逗号分隔、最多 20 个，与服务端上限一致）。真实浏览器走查落在 `tests/local-flow.e2e.spec.ts` 的新用例「管理员在真实工作区走查批量复核、标签、归档与成员生命周期」（真实 API + MySQL + 浏览器，批量复核 3 条、批量归档 2 条、恢复 1 条、打标签与按标签筛选各一次，截图见 `test-results/.../ops-*.png`）；`tests/web-access.e2e.spec.ts` 另有用例断言只提交勾选 ID 与部分失败归并文案（28 个用例全绿）。
+- [x] 8.3 在 `apps/web/src/pages/MembersPage.tsx` 补角色变更、停用 / 启用、邀请列表与撤销，并在护栏触发时呈现禁用态与说明文案（不能停用自己、不能停用或降级最后一名管理员）。停用与降级需二次确认。验证：浏览器走查四种护栏态的文案与禁用表现，并确认非管理员看不到这些操作。实施备注：护栏拆成两条——停用挡「不能停用自己」，降级挡「不能撤掉最后一名启用管理员」；同一个人同时命中时合并成一句（「不能停用或降级当前登录的自己：…」），避免读两遍近似文案。服务端 409（并发场景）的原因经 `describeApiError` 就地显示在列表旁。非管理员看不到入口由 `tests/web-access.e2e.spec.ts` 的角色矩阵用例覆盖；四种护栏态与二次确认在真实工作区走查（同上 local-flow 用例，含唯一管理员工作区的禁用态）。
+- [x] 8.4 确认 `GET /members/assignable`（`server.ts:646-655`）已过滤 `status === 'active'`，因此被停用成员不会出现在归属人下拉中。验证：浏览器走查归属人下拉不含已停用成员。实施备注：路由现为 `server.ts:701-710`，服务端过滤确认无误；达人库的「运营成员」筛选另在客户端按 `status === 'active'` 过滤。真实走查在停用成员后分别打开两个下拉，断言已停用成员不在其中；启用后设备仍保持已撤销。
 
 ## 9. 筛选任务与模板界面（仅 web，后端零改动）
 
@@ -74,10 +74,10 @@
 
 ## 11. 文档同步
 
-- [ ] 11.1 更新 `docs/product-manual.md` 与 `docs/operations/operator-guide.md`：归档与恢复流程、「已归档」视图、批量复核与批量归档的操作方式与上限、标签的添加与筛选、筛选任务的编辑 / 复制 / 归档与「改条件只影响新运行」、以及「删除只能是软归档、采集事实字段不可编辑」的边界说明。验证：文档中的界面名称与 `apps/web/src/constants.ts` 的标签常量逐一对应，命令示例可完整复制且不含真实密码、Secret、Cookie、令牌或私钥。
-- [ ] 11.2 更新 `docs/operations/admin-guide.md`：成员停用 / 启用 / 改角色的效果与级联范围（停用会撤销全部会话与设备、启用不恢复设备）、邀请撤销、最后管理员护栏、护栏导致无法操作时用 `bootstrap-admin` CLI 救援的完整步骤、筛选模板的维护职责（新建 / 编辑 / 归档，仅管理员）、以及已撤销设备的默认隐藏与历史查看方式。明确写出「停用是账户级而非工作区级」。验证：救援步骤中的命令可完整复制，`npm run bootstrap-admin -w @douyin/domain` 的调用形式与实际脚本一致。
-- [ ] 11.3 更新 `docs/collector-windows.md` 与 `docs/collector-macos.md` 中关于设备撤销的描述（如有）：说明服务端已撤销设备在网页端默认隐藏、无法删除，重新配对需在本机进行。验证：`grep -rn "已撤销" docs` 的说法与实现一致。
-- [ ] 11.4 更新 `README.md` 中涉及成员管理、筛选任务或候选操作的描述（如有）。验证：`grep -n "只能邀请\|无法停用\|只能新建" README.md docs` 无遗留旧说法。
+- [x] 11.1 更新 `docs/product-manual.md` 与 `docs/operations/operator-guide.md`：归档与恢复流程、「已归档」视图、批量复核与批量归档的操作方式与上限、标签的添加与筛选、筛选任务的编辑 / 复制 / 归档与「改条件只影响新运行」、以及「删除只能是软归档、采集事实字段不可编辑」的边界说明。验证：文档中的界面名称与 `apps/web/src/constants.ts` 的标签常量逐一对应，命令示例可完整复制且不含真实密码、Secret、Cookie、令牌或私钥。实施备注：product-manual 新增 5 节「编辑、复制与归档」「从模板新建（管理员）」与 8.4/8.5/8.6（批量、标签、归档与恢复），10 节补成员生命周期与已撤销设备；operator-guide 在 2、4、5 节补同一套操作的运营视角与新的异常文案；界面名称逐一对照 `candidateSections`、批量操作栏、归档开关、标签编辑与模板页按钮文案。
+- [x] 11.2 更新 `docs/operations/admin-guide.md`：成员停用 / 启用 / 改角色的效果与级联范围（停用会撤销全部会话与设备、启用不恢复设备）、邀请撤销、最后管理员护栏、护栏导致无法操作时用 `bootstrap-admin` CLI 救援的完整步骤、筛选模板的维护职责（新建 / 编辑 / 归档，仅管理员）、以及已撤销设备的默认隐藏与历史查看方式。明确写出「停用是账户级而非工作区级」。验证：救援步骤中的命令可完整复制，`npm run bootstrap-admin -w @douyin/domain` 的调用形式与实际脚本一致。实施备注：核对 `packages/domain/src/auth/bootstrap-admin-cli.ts` 后修正了旧文档的两处错误说法——该 CLI 从环境变量读取输入（没有交互提示），且只能创建首位管理员：工作区已有管理员成员记录时同邮箱返回 `already_initialized`、换邮箱直接报错，因此「唯一管理员被停用或丢密码」不能靠它救援。文档据此给出两条路径：无管理员记录时用 `docker compose ... --profile tools run --rm -e BOOTSTRAP_ADMIN_* migrate node packages/domain/dist/auth/bootstrap-admin-cli.js`（与 `scripts/deploy-production.sh:24` 的调用形式一致）；记录仍在时执行一次性、留痕的 `UPDATE users` 修复，并写明先备份目标行、事后记录执行人与原因。
+- [x] 11.3 更新 `docs/collector-windows.md` 与 `docs/collector-macos.md` 中关于设备撤销的描述（如有）：说明服务端已撤销设备在网页端默认隐藏、无法删除，重新配对需在本机进行。验证：`grep -rn "已撤销" docs` 的说法与实现一致。实施备注：两篇原文都没有设备撤销章节，各补一节「设备被撤销」，说法与 `DevicesPage` 的只读历史、`disableUserAccount` 的级联撤销一致。
+- [x] 11.4 更新 `README.md` 中涉及成员管理、筛选任务或候选操作的描述（如有）。验证：`grep -n "只能邀请\|无法停用\|只能新建" README.md docs` 无遗留旧说法。实施备注：README 没有需要修改的旧说法（成员与候选操作都指向 product-manual / admin-guide），grep 校验退出码 1（无命中）；product-manual 15 节上线验收补了批量 / 标签 / 归档 / 成员停用启用四个走查项。
 
 ## 12. 全量验证与上线
 
