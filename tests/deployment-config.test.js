@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import OSS from 'ali-oss';
 
-import { validateProductionEnvironment } from '../scripts/preflight-production.mjs';
+import {
+  validateProductionEnvironment,
+  verifyLiveDependencies,
+} from '../scripts/preflight-production.mjs';
 import { readFileSync } from 'node:fs';
+
+vi.mock('mysql2/promise', () => ({
+  default: {
+    createConnection: vi.fn(async () => ({
+      query: async (sql) => [
+        sql.includes('Ssl_cipher') ? [{ Value: 'TLS_AES_256_GCM_SHA384' }] : [],
+      ],
+      end: async () => {},
+    })),
+  },
+}));
 
 const validEnvironment = {
   API_IMAGE: 'registry.local/douyin-api:2026.09.15-1',
@@ -27,8 +42,47 @@ const validEnvironment = {
 };
 
 describe('production preflight', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('checks the configured bucket through the real OSS ACL SDK method', async () => {
+    const request = vi.spyOn(OSS.prototype, 'request').mockImplementation(async (params) => ({
+      data: params.bucket
+        ? { AccessControlList: { Grant: 'private' }, Owner: { ID: 'owner', DisplayName: 'owner' } }
+        : { Buckets: { Bucket: [] } },
+      res: { status: 200 },
+    }));
+
+    await expect(verifyLiveDependencies(validEnvironment)).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bucket: validEnvironment.OSS_BUCKET,
+        method: 'GET',
+        subres: 'acl',
+      }),
+    );
+  });
+
   it('accepts separated least-privilege TLS database roles and private OSS', () => {
     expect(validateProductionEnvironment(validEnvironment)).toEqual([]);
+  });
+
+  it.each(['public-read', 'public-read-write', undefined])(
+    'still blocks publication when the bucket ACL is %s',
+    async (acl) => {
+      vi.spyOn(OSS.prototype, 'request').mockResolvedValue({
+        data: { AccessControlList: { Grant: acl }, Owner: { ID: 'owner', DisplayName: 'owner' } },
+        res: { status: 200 },
+      });
+
+      await expect(verifyLiveDependencies(validEnvironment)).rejects.toThrow(
+        'OSS bucket ACL 必须为 private',
+      );
+    },
+  );
+
+  it('does not bypass denied OSS ACL access', async () => {
+    vi.spyOn(OSS.prototype, 'request').mockRejectedValue(new Error('AccessDenied'));
+    await expect(verifyLiveDependencies(validEnvironment)).rejects.toThrow('AccessDenied');
   });
 
   it('rejects public RDS access, plaintext transport, shared admin roles, weak secrets and public OSS', () => {

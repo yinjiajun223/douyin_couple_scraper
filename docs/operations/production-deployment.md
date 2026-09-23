@@ -21,6 +21,10 @@
 
 镜像必须固定版本标签或 digest。执行 `sh scripts/deploy-production.sh .env.production`。脚本依次执行在线预检、拉取镜像、取得 MySQL 迁移锁并前向迁移、替换服务、检查 readiness。Compose 仅发布 80/443；日志使用 Docker JSON 文件轮转（每个容器 10MB × 5）。
 
+在线预检必须显式调用 `getBucketACL(environment.OSS_BUCKET)`；ali-oss 的该方法不会自动使用构造时配置的 bucket。旧脚本遗漏参数可能请求服务级地址并出现 `Cannot read properties of undefined (reading 'Grant')`。遇到该错误应先备份并更新预检脚本，再重新执行在线检查；不得跳过 ACL 检查、扩大 RAM 权限或把 bucket 改为公开。公开、缺失或无法读取的 ACL 均不得视为通过。
+
+本地已有经过验证的发布镜像包时，优先通过 SCP 直传生产服务器，避免服务器从 GitHub 重复下载。上传后必须在服务器比对完整 SHA256，再导入固定版本镜像；传输方式改变不豁免在线预检、配置备份、发布范围限制或外部 readiness 验证。仅更新网页时按对应发布记录执行 web-only 流程，不直接套用会迁移和替换全部服务的完整发布脚本。
+
 迁移遵守 expand/contract：先新增可空列、表或索引，旧镜像不依赖新字段；确认所有旧镜像退出且观察一个发布周期后，另开变更删除旧结构。禁止在同一发布中重命名或删除旧镜像仍读取的列。
 
 ## 回滚

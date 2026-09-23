@@ -13,7 +13,7 @@
 
 ## 平台发布状态
 
-- Windows：本次目标发布平台。正式 ZIP 构建、包级冒烟、受控故障验收及小规模真实试跑已完成。用户已于 2026-09-23 确认取消两小时和 24 小时专项试跑，改为本人线上使用验收、发现问题后修复；两项不再作为发布前置门槛，也不记作测试通过。正式发布仍需完成下载交付和回退验证。
+- Windows：正式 ZIP 已发布并完成下载校验，包级冒烟、受控故障验收及小规模真实试跑已完成。用户已于 2026-09-23 确认取消两小时和 24 小时专项试跑，改为本人线上使用验收、发现问题后修复；两项不再作为发布前置门槛，也不记作测试通过。完整回退续跑演练仍待完成。
 - 发布工作流本次选择 `include_macos=false`，仅发布 Windows 包；只有显式选择包含 macOS 且 Intel、Apple Silicon 两项冒烟均通过时，工作流才允许发布 macOS 包。
 - macOS：源码与文档保持相同行为，但本次未在 Apple Silicon 和 Intel 两种真机上构建、冒烟和真实试运行，因此不发布或宣称 v0.1.6 macOS 包可用。后续必须使用同一个 universal 包分别完成两种架构验收。
 
@@ -33,3 +33,15 @@
 - 18:05（北京时间）确认空闲且待同步为 0 后，通过本机控制接口关闭浏览器并切换修正版；旧 v0.1.6 安装目录重命名为 `collector-windows-v0.1.6-before-visible-text-fix`，v0.1.5 与共享 `data` 均保留。修正版继续安装在原 v0.1.6 同级目录，复用原配对和画像，随后人工授权继续同一运行。
 - 18:05:53 检查：运行状态为 `running`，已核验并同步 1 位作者、1 条作品，候选为 0，待同步批次为 0，无恢复事件或安全暂停。长运行验收继续保持未完成，不自动开始下一次运行。
 - 发布前按上述运行 ID 重新查询服务端，实际完成进度为 100 条作品、90 位作者、1 位硬筛通过、629 秒，待同步批次和证据为 0。用户确认时附图显示 96 位作者，但截图不含运行 ID；该数字不作为本次运行的精确服务端计数。
+
+## 正式发布与网页部署进度
+
+- Windows 已通过 [发布流水线 35849052803](https://github.com/yinjiajun223/douyin_couple_scraper/actions/runs/35849052803) 正式发布，源码提交为 `4cafae8`。包级冒烟和启动器冒烟通过，macOS 任务按本次范围跳过。
+- [v0.1.6 下载页](https://github.com/yinjiajun223/douyin_couple_scraper/releases/tag/collector-v0.1.6) 的 Windows ZIP 为 45,290,259 字节，SHA256 为 `ddb5e5592d7a4398c690df1cec37f5750333389adf966a2bb6bfed138422f39a`；已重新下载并验证与随包校验文件一致。该流水线构建与前述本机测试构建的 SHA256 不同，下载时须匹配各自的校验文件。
+- v0.1.5 的实际 API 客户端使用原本机 DPAPI 设备身份访问设备信息和运行列表均返回 HTTP 200，未被 426 阻断。旧版检查点归一化代码只读加载新版短时运行 `5cf017bf-36d1-48cb-8d1e-8bcb0e93e5fa` 的检查点，进度、已见作品、已见作者和待同步批次均保留，未写磁盘。新版已保存并暂停该运行，待同步为 0；实际关闭新版、启动旧版继续的自动操作被工具安全检查拦截，完整回退续跑演练仍未完成。
+- 网页镜像 `douyin-ops-web:20260923-3` 已上线，本地隔离容器的健康检查、首页和 1,440 分钟提示检查通过；生产首页已引用 `/assets/index-DgjACcC7.js`，外部 HTTPS 检查确认该资源返回 HTTP 200，包含 `1440` 和 `1,440` 提示。
+- 网页镜像和本次专用部署脚本已作为同一 Release 的额外运维附件提供，普通采集器用户只下载 Windows ZIP 及对应 SHA256。`douyin-ops-web-20260923-3.tar` 的 SHA256 为 `10ded025049da7dbb5fe27291cefdd0c2a622ec8131fbe90427291d776c7ecb4`；`deploy-web-20260923-3.sh` 的 SHA256 为 `61dbb1f3ce0499a374a384e335ec02be77f60d62a071b7d8cfe091950d7220aa`。
+- 专用部署脚本限定 `/srv/douyin-ops/app` 和旧网页镜像 `20260923-2`，执行在线预检、镜像校验、配置备份后只替换 web 并测试、重载 Nginx；不运行迁移、不重建 API/worker。切换后校验失败会尝试恢复旧网页镜像，并保留备份供人工复核。脚本已通过 POSIX shell 语法检查，本次生产发布返回 `WEB_RELEASE_OK`；未触发失败回退，不将此记作实际回退演练通过。
+- 首次生产执行在 OSS ACL 在线预检阶段失败，报错为 `reading 'Grant'`；尚未进入镜像切换，备份目录为 `/srv/douyin-ops/app/infra/production/web-release-20260923-3.5PoMM7`。本地通过真实 ali-oss 方法和模拟网络响应复现相同异常，并确认遗漏 bucket 参数会生成服务级请求地址。已修复为显式传入 `environment.OSS_BUCKET`，补充私有桶成功、公开/缺失 ACL 拒绝和权限错误不绕过的回归，共 10 项部署检查测试通过。服务器旧预检脚本保存在 `/srv/douyin-ops/app/infra/production/acl-preflight-fix.mmPcMo/preflight-production.mjs`，修复后 RDS TLS/权限与 OSS ACL 在线预检通过，未关闭 TLS 校验或更改 OSS ACL。
+- 服务器直连 GitHub 下载缓慢，随后改由本机 SCP 上传同一镜像包到 `/tmp/douyin-ops-web-20260923-3.tar`，约 25 秒完成；执行前验证镜像和原部署脚本 SHA256，再生成仅将 `IMAGE_URL` 改为该本地文件地址的临时脚本，其余预检、备份、切换和回退流程保持不变。公开 Release 附件未被覆盖。
+- 2026-09-23 19:00（北京时间）生产发布成功，备份目录为 `/srv/douyin-ops/app/infra/production/web-release-20260923-3.6sOqjD`。web 更新到 `20260923-3`，API/worker 继续运行 `20260923-2` 且未重启；Nginx 配置检查通过并完成重载。随后外部 HTTPS 首页、新版 JS 与 `/health/ready` 均返回 HTTP 200，就绪结果为 MySQL `up`、OSS `up`、总体 `ok`。此次网页发布不改变孤儿清理开关。

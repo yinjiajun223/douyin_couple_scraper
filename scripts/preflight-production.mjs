@@ -113,7 +113,7 @@ export function validateProductionEnvironment(environment) {
   return errors;
 }
 
-async function verifyLiveDependencies(environment) {
+export async function verifyLiveDependencies(environment) {
   const runtimeUrl = new URL(environment.DATABASE_URL);
   runtimeUrl.searchParams.delete('ssl-mode');
   const mysql = await import('mysql2/promise');
@@ -147,7 +147,7 @@ async function verifyLiveDependencies(environment) {
     region: environment.OSS_REGION,
     secure: true,
   });
-  const aclResult = await client.getBucketACL();
+  const aclResult = await client.getBucketACL(environment.OSS_BUCKET);
   if (aclResult.acl !== 'private')
     throw new Error(`OSS bucket ACL 必须为 private，当前为 ${aclResult.acl}`);
 }
