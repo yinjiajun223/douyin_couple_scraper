@@ -1,4 +1,4 @@
-import type { Pool } from 'mysql2/promise';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -373,6 +373,171 @@ describeWithMysql('角色 API 权限矩阵', () => {
     expect(exported.statusCode).toBe(200);
     expect(exported.body).not.toContain('运营甲私有达人');
     expect(dashboard.json()).toMatchObject({ pendingReview: 0, toContact: 0 });
+    await server.close();
+  });
+  it('批量复核、批量归档、单条归档与标签写入都要 candidate:write 加 CSRF', async () => {
+    const server = buildServer({ pool, logger: false, secureCookies: true });
+    const operator = await login(server, 'operator');
+    const readonly = await login(server, 'readonly');
+    const candidateId = '1a000000-0000-4000-8000-000000000016';
+    const reviewPayload = {
+      decision: 'approved',
+      items: [{ candidateId, expectedVersion: 1 }],
+    };
+    const archivePayload = { items: [{ candidateId, expectedVersion: 1 }] };
+
+    const withoutCsrf = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: '/candidates/batch-reviews',
+        headers: { cookie: operator.cookie },
+        payload: reviewPayload,
+      }),
+      server.inject({
+        method: 'POST',
+        url: '/candidates/batch-archive',
+        headers: { cookie: operator.cookie },
+        payload: archivePayload,
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/candidates/${candidateId}/archive`,
+        headers: { cookie: operator.cookie },
+        payload: { expectedVersion: 1 },
+      }),
+      server.inject({
+        method: 'PUT',
+        url: `/candidates/${candidateId}/tags`,
+        headers: { cookie: operator.cookie },
+        payload: { tags: ['不应写入'] },
+      }),
+    ]);
+    expect(withoutCsrf.map((response) => response.statusCode)).toEqual([403, 403, 403, 403]);
+    expect(withoutCsrf.map((response) => response.json().code)).toEqual([
+      'INVALID_CSRF_TOKEN',
+      'INVALID_CSRF_TOKEN',
+      'INVALID_CSRF_TOKEN',
+      'INVALID_CSRF_TOKEN',
+    ]);
+
+    const readonlyHeaders = {
+      cookie: readonly.cookie,
+      'x-csrf-token': readonly.csrfToken,
+    };
+    const asReadonly = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: '/candidates/batch-reviews',
+        headers: readonlyHeaders,
+        payload: reviewPayload,
+      }),
+      server.inject({
+        method: 'POST',
+        url: '/candidates/batch-archive',
+        headers: readonlyHeaders,
+        payload: archivePayload,
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/candidates/${candidateId}/archive`,
+        headers: readonlyHeaders,
+        payload: { expectedVersion: 1 },
+      }),
+      server.inject({
+        method: 'PUT',
+        url: `/candidates/${candidateId}/tags`,
+        headers: readonlyHeaders,
+        payload: { tags: ['不应写入'] },
+      }),
+    ]);
+    expect(asReadonly.map((response) => response.statusCode)).toEqual([403, 403, 403, 403]);
+
+    // 前面八次拒绝都没有留下任何痕迹。
+    const [untouched] = await pool.query<RowDataPacket[]>(
+      `SELECT pipeline_status, version, archived_at,
+              (SELECT COUNT(*) FROM candidate_tags WHERE candidate_id = ?) AS tag_links
+       FROM campaign_candidates WHERE id = ?`,
+      [candidateId, candidateId],
+    );
+    expect(untouched[0]).toMatchObject({
+      archived_at: null,
+      pipeline_status: 'pending_review',
+      tag_links: 0,
+      version: 1,
+    });
+
+    const operatorHeaders = {
+      cookie: operator.cookie,
+      'x-csrf-token': operator.csrfToken,
+    };
+    const tooMany = await server.inject({
+      method: 'POST',
+      url: '/candidates/batch-reviews',
+      headers: operatorHeaders,
+      payload: {
+        decision: 'approved',
+        items: Array.from({ length: 101 }, (_, index) => ({
+          candidateId,
+          expectedVersion: index + 1,
+        })),
+      },
+    });
+    expect(tooMany.statusCode).toBe(400);
+    expect(tooMany.json()).toMatchObject({ code: 'INVALID_BATCH_REQUEST' });
+
+    const reviewed = await server.inject({
+      method: 'POST',
+      url: '/candidates/batch-reviews',
+      headers: operatorHeaders,
+      payload: reviewPayload,
+    });
+    expect(reviewed.statusCode).toBe(200);
+    expect(reviewed.json()).toEqual({
+      failed: 0,
+      results: [{ id: candidateId, ok: true }],
+      succeeded: 1,
+    });
+
+    const tagged = await server.inject({
+      method: 'PUT',
+      url: `/candidates/${candidateId}/tags`,
+      headers: operatorHeaders,
+      payload: { tags: ['校园', '情侣'] },
+    });
+    expect(tagged.statusCode).toBe(200);
+    expect(tagged.json()).toEqual({ id: candidateId, tags: ['情侣', '校园'] });
+
+    // 复核已把版本推到 2，归档必须带上最新版本。
+    const staleArchive = await server.inject({
+      method: 'POST',
+      url: '/candidates/batch-archive',
+      headers: operatorHeaders,
+      payload: archivePayload,
+    });
+    expect(staleArchive.statusCode).toBe(200);
+    expect(staleArchive.json()).toMatchObject({
+      failed: 1,
+      results: [{ code: 'VERSION_CONFLICT', currentVersion: 2, id: candidateId, ok: false }],
+      succeeded: 0,
+    });
+
+    const archived = await server.inject({
+      method: 'POST',
+      url: `/candidates/${candidateId}/archive`,
+      headers: operatorHeaders,
+      payload: { expectedVersion: 2, note: '重复达人' },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toEqual({ id: candidateId, version: 3 });
+
+    const restored = await server.inject({
+      method: 'POST',
+      url: `/candidates/${candidateId}/unarchive`,
+      headers: operatorHeaders,
+      payload: { expectedVersion: 3 },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toEqual({ id: candidateId, version: 4 });
     await server.close();
   });
 });

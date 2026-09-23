@@ -13,8 +13,11 @@ import {
   appendCandidateNote,
   archiveCampaign,
   archiveCampaignTemplate,
+  archiveCandidate,
   authenticateDevice,
   authenticateSession,
+  batchArchiveCandidates,
+  batchSubmitManualReview,
   deriveSessionCsrfToken,
   CampaignNotActiveError,
   CandidateAccessDeniedError,
@@ -81,6 +84,7 @@ import {
   PairingCodeExpiredError,
   PairingCodeInvalidError,
   parseApiConfig,
+  PermissionDeniedError,
   pauseCollectionRun,
   pauseCollectionRunByDevice,
   reportCollectionRunProgress,
@@ -92,11 +96,13 @@ import {
   rotateDeviceToken,
   RunProgressRegressionError,
   SESSION_TTL_SECONDS,
+  setCandidateTags,
   startClaimedCollectionRun,
   submitManualReview,
   terminateCollectionRun,
   terminateCollectionRunByDevice,
   transitionCandidatePipeline,
+  unarchiveCandidate,
   updateCampaign,
   updateCampaignTemplate,
   updateCandidateOutreach,
@@ -1018,6 +1024,112 @@ export function buildServer({
     },
   );
 
+  // 批量入口只接受显式 ID 数组：服务端不会按筛选条件展开，避免「勾了 5 条却改了 500 条」。
+  server.post<{ Body: unknown }>('/candidates/batch-reviews', async (request, reply) => {
+    const principal = await authorizeBrowserRequest(pool, request, reply, 'candidate:write', true);
+    if (!principal) return;
+    try {
+      return await batchSubmitManualReview(pool, {
+        ...(request.body as Record<string, unknown>),
+        actorRole: principal.role,
+        actorUserId: principal.userId,
+        workspaceId: principal.workspaceId,
+      });
+    } catch (error) {
+      return handleBatchOperationError(error, reply);
+    }
+  });
+
+  server.post<{ Body: unknown }>('/candidates/batch-archive', async (request, reply) => {
+    const principal = await authorizeBrowserRequest(pool, request, reply, 'candidate:write', true);
+    if (!principal) return;
+    try {
+      return await batchArchiveCandidates(pool, {
+        ...(request.body as Record<string, unknown>),
+        actorRole: principal.role,
+        actorUserId: principal.userId,
+        workspaceId: principal.workspaceId,
+      });
+    } catch (error) {
+      return handleBatchOperationError(error, reply);
+    }
+  });
+
+  server.post<{ Body: unknown; Params: { candidateId: string } }>(
+    '/candidates/:candidateId/archive',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(
+        pool,
+        request,
+        reply,
+        'candidate:write',
+        true,
+      );
+      if (!principal) return;
+      try {
+        return await archiveCandidate(pool, {
+          ...(request.body as Record<string, unknown>),
+          actorRole: principal.role,
+          actorUserId: principal.userId,
+          candidateId: request.params.candidateId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        return handleCandidateWorkflowError(error, reply);
+      }
+    },
+  );
+
+  server.post<{ Body: unknown; Params: { candidateId: string } }>(
+    '/candidates/:candidateId/unarchive',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(
+        pool,
+        request,
+        reply,
+        'candidate:write',
+        true,
+      );
+      if (!principal) return;
+      try {
+        return await unarchiveCandidate(pool, {
+          ...(request.body as Record<string, unknown>),
+          actorRole: principal.role,
+          actorUserId: principal.userId,
+          candidateId: request.params.candidateId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        return handleCandidateWorkflowError(error, reply);
+      }
+    },
+  );
+
+  server.put<{ Body: unknown; Params: { candidateId: string } }>(
+    '/candidates/:candidateId/tags',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(
+        pool,
+        request,
+        reply,
+        'candidate:write',
+        true,
+      );
+      if (!principal) return;
+      try {
+        return await setCandidateTags(pool, {
+          ...(request.body as Record<string, unknown>),
+          actorRole: principal.role,
+          actorUserId: principal.userId,
+          candidateId: request.params.candidateId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        return handleCandidateWorkflowError(error, reply);
+      }
+    },
+  );
+
   server.get<{ Querystring: { campaignId?: string; limit?: string } }>(
     '/runs',
     async (request, reply) => {
@@ -1370,7 +1482,19 @@ function handleMediaError(error: unknown, reply: FastifyReply) {
   throw error;
 }
 
+function handleBatchOperationError(error: unknown, reply: FastifyReply) {
+  // 批量请求本身的形状问题（超过上限、重复 ID、空批次）与逐项失败分开：
+  // 逐项失败走 200 + results，形状问题才是 400。
+  if (error instanceof Error && error.name === 'ZodError') {
+    return reply.code(400).send({ code: 'INVALID_BATCH_REQUEST' });
+  }
+  return handleCandidateWorkflowError(error, reply);
+}
+
 function handleCandidateWorkflowError(error: unknown, reply: FastifyReply) {
+  if (error instanceof PermissionDeniedError) {
+    return reply.code(403).send({ code: 'FORBIDDEN', permission: error.permission });
+  }
   if (error instanceof CandidateWorkflowNotFoundError) {
     return reply.code(404).send({ code: 'CANDIDATE_WORKFLOW_NOT_FOUND' });
   }
