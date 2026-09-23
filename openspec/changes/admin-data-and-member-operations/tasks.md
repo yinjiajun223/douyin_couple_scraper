@@ -46,8 +46,8 @@
 
 ## 7. 审计类型扩展
 
-- [ ] 7.1 在 `packages/domain/src/audit/audit-events.ts` 的 `AuditAction` 联合类型（:7-21）补 `candidate.archived`、`candidate.unarchived`、`candidate.tags_changed`、`account.role_changed`、`account.enabled`、`account.invitation_revoked`。验证：`npm run typecheck` 通过，`packages/domain/src/audit/audit-events.integration.test.ts` 全绿，无需迁移（见 1.3）。
-- [ ] 7.2 确认审计页能正确展示新增 action 的中文标签，缺失标签时不得回退为显示原始英文键或空白。验证：`apps/web/src/pages/AuditPage.tsx` 的标签映射覆盖全部新 action，`npm run typecheck -w @douyin/web` 通过。
+- [x] 7.1 在 `packages/domain/src/audit/audit-events.ts` 的 `AuditAction` 联合类型（:7-21）补 `candidate.archived`、`candidate.unarchived`、`candidate.tags_changed`、`account.role_changed`、`account.enabled`、`account.invitation_revoked`。验证：`npm run typecheck` 通过，`packages/domain/src/audit/audit-events.integration.test.ts` 全绿，无需迁移（见 1.3）。
+- [x] 7.2 确认审计页能正确展示新增 action 的中文标签，缺失标签时不得回退为显示原始英文键或空白。验证：`apps/web/src/pages/AuditPage.tsx` 的标签映射覆盖全部新 action，`npm run typecheck -w @douyin/web` 通过。实施备注（7.1-7.2）：六个新 action 已在 `AuditAction` 联合类型中（无 CHECK 约束，见 1.3）。标签映射放在 `apps/web/src/constants.ts`，类型为 `Record<AuditAction, string>`——web 侧在 `types.ts` 单独声明同一个联合（不能依赖服务端领域包），因此新增动作漏配标签会直接编译不过。审计对象另有 `auditSubjectLabels`。界面永远显示中文，未收录取值走「其他操作 / 其他对象」兜底，原始英文键只放进 `title` 供排查复制；`tests/web-access.e2e.spec.ts` 新增用例断言六个新动作的中文标签、兜底文案，以及英文键不作为可见文本出现（22 个用例全绿）。
 
 ## 8. 前端
 
