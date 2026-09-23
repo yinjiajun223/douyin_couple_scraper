@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -538,6 +540,168 @@ describeWithMysql('角色 API 权限矩阵', () => {
     });
     expect(restored.statusCode).toBe(200);
     expect(restored.json()).toEqual({ id: candidateId, version: 4 });
+    await server.close();
+  });
+  it('成员停用、启用与改角色只属于管理员，护栏拒绝时给出原因且无部分生效', async () => {
+    const server = buildServer({ pool, logger: false, secureCookies: true });
+    const admin = await login(server, 'admin');
+    const operator = await login(server, 'operator');
+    const operatorB = await login(server, 'operatorB');
+    const readonly = await login(server, 'readonly');
+    const candidateId = '1a000000-0000-4000-8000-000000000016';
+    const me = async (cookie: string) =>
+      (
+        (await server.inject({ method: 'GET', url: '/auth/me', headers: { cookie } })).json()
+          .user as { id: string }
+      ).id;
+    const adminUserId = await me(admin.cookie);
+    const operatorBUserId = await me(operatorB.cookie);
+    const readonlyUserId = await me(readonly.cookie);
+    const adminHeaders = { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken };
+
+    const forbidden = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: `/members/${readonlyUserId}/disable`,
+        headers: { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken },
+      }),
+      server.inject({
+        method: 'PUT',
+        url: `/members/${readonlyUserId}/role`,
+        headers: { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken },
+        payload: { role: 'operator' },
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/members/${readonlyUserId}/enable`,
+        headers: { cookie: readonly.cookie, 'x-csrf-token': readonly.csrfToken },
+      }),
+      // 管理员身份但缺 CSRF。
+      server.inject({
+        method: 'POST',
+        url: `/members/${readonlyUserId}/disable`,
+        headers: { cookie: admin.cookie },
+      }),
+    ]);
+    expect(forbidden.map((response) => response.statusCode)).toEqual([403, 403, 403, 403]);
+
+    const outreachAsReadonly = () =>
+      server.inject({
+        method: 'PUT',
+        url: `/candidates/${candidateId}/outreach`,
+        headers: { cookie: readonly.cookie, 'x-csrf-token': readonly.csrfToken },
+        payload: { expectedVersion: 0, nextAction: '不应成功' },
+      });
+    expect((await outreachAsReadonly()).statusCode).toBe(403);
+
+    const promoted = await server.inject({
+      method: 'PUT',
+      url: `/members/${readonlyUserId}/role`,
+      headers: adminHeaders,
+      payload: { role: 'operator' },
+    });
+    expect(promoted.statusCode).toBe(200);
+    expect(promoted.json()).toEqual({ role: 'operator', targetUserId: readonlyUserId });
+    // 同一条会话、不重新登录：写权限已经按新角色判定，失败原因从「无权限」变成「看不见这条候选」。
+    expect((await outreachAsReadonly()).statusCode).toBe(404);
+
+    const selfDisable = await server.inject({
+      method: 'POST',
+      url: `/members/${adminUserId}/disable`,
+      headers: adminHeaders,
+    });
+    expect(selfDisable.statusCode).toBe(409);
+    expect(selfDisable.json().code).toBe('SELF_DISABLE_NOT_ALLOWED');
+    expect(selfDisable.json().message).toContain('不能停用当前登录的自己');
+
+    const selfDemote = await server.inject({
+      method: 'PUT',
+      url: `/members/${adminUserId}/role`,
+      headers: adminHeaders,
+      payload: { role: 'operator' },
+    });
+    expect(selfDemote.statusCode).toBe(409);
+    expect(selfDemote.json()).toMatchObject({ code: 'LAST_ACTIVE_ADMIN' });
+
+    const [adminRow] = await pool.query<RowDataPacket[]>(
+      `SELECT users.status, memberships.role FROM memberships
+       JOIN users ON users.id = memberships.user_id
+       WHERE memberships.workspace_id = ? AND memberships.user_id = ?`,
+      [workspaceId, adminUserId],
+    );
+    expect(adminRow[0]).toMatchObject({ role: 'admin', status: 'active' });
+
+    const disabled = await server.inject({
+      method: 'POST',
+      url: `/members/${operatorBUserId}/disable`,
+      headers: adminHeaders,
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json()).toEqual({ status: 'disabled', targetUserId: operatorBUserId });
+    const enabled = await server.inject({
+      method: 'POST',
+      url: `/members/${operatorBUserId}/enable`,
+      headers: adminHeaders,
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json()).toEqual({ status: 'active', targetUserId: operatorBUserId });
+
+    const unknownMember = await server.inject({
+      method: 'POST',
+      url: '/members/00000000-0000-4000-8000-000000000999/disable',
+      headers: adminHeaders,
+    });
+    expect(unknownMember.statusCode).toBe(404);
+    expect(unknownMember.json()).toMatchObject({ code: 'MEMBER_NOT_FOUND' });
+
+    // 复原夹具角色，避免影响其他用例。
+    const restored = await server.inject({
+      method: 'PUT',
+      url: `/members/${readonlyUserId}/role`,
+      headers: adminHeaders,
+      payload: { role: 'readonly' },
+    });
+    expect(restored.statusCode).toBe(200);
+    await server.close();
+  });
+  it('邀请列表与撤销只属于管理员', async () => {
+    const server = buildServer({ pool, logger: false, secureCookies: true });
+    const admin = await login(server, 'admin');
+    const operator = await login(server, 'operator');
+    const readonly = await login(server, 'readonly');
+    const invitationId = randomUUID();
+
+    const denied = await Promise.all([
+      server.inject({ method: 'GET', url: '/invitations', headers: { cookie: operator.cookie } }),
+      server.inject({ method: 'GET', url: '/invitations', headers: { cookie: readonly.cookie } }),
+      server.inject({
+        method: 'POST',
+        url: `/invitations/${invitationId}/revoke`,
+        headers: { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken },
+      }),
+      server.inject({
+        method: 'POST',
+        url: `/invitations/${invitationId}/revoke`,
+        headers: { cookie: admin.cookie },
+      }),
+    ]);
+    expect(denied.map((response) => response.statusCode)).toEqual([403, 403, 403, 403]);
+
+    const asAdmin = await server.inject({
+      method: 'GET',
+      url: '/invitations',
+      headers: { cookie: admin.cookie },
+    });
+    expect(asAdmin.statusCode).toBe(200);
+    expect(Array.isArray(asAdmin.json().invitations)).toBe(true);
+
+    const unknown = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/revoke`,
+      headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toMatchObject({ code: 'INVITATION_NOT_FOUND' });
     await server.close();
   });
 });

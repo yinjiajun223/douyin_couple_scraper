@@ -149,4 +149,72 @@ describeWithMysql('邀请制账户流程', () => {
     expect(users).toHaveLength(0);
     await server.close();
   });
+  it('撤销后的邀请从列表消失、不能再撤销，接受时返回 410', async () => {
+    const { server, cookie, csrfToken } = await adminSession();
+    const created = await server.inject({
+      method: 'POST',
+      url: '/invitations',
+      headers: { cookie: cookie!, 'x-csrf-token': csrfToken },
+      payload: { email: 'revoked.invited@example.test', role: 'operator', expiresInHours: 24 },
+    });
+    const invitationId = created.json().invitationId as string;
+    const token = created.json().token as string;
+
+    const listed = await server.inject({
+      method: 'GET',
+      url: '/invitations',
+      headers: { cookie: cookie! },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().invitations.map((item: { id: string }) => item.id)).toContain(
+      invitationId,
+    );
+    // 列表响应不含令牌明文，也不含令牌哈希。
+    expect(JSON.stringify(listed.json())).not.toContain(token);
+
+    const withoutCsrf = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/revoke`,
+      headers: { cookie: cookie! },
+    });
+    expect(withoutCsrf.statusCode).toBe(403);
+
+    const revoked = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/revoke`,
+      headers: { cookie: cookie!, 'x-csrf-token': csrfToken },
+    });
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toEqual({ invitationId, revoked: true });
+
+    const again = await server.inject({
+      method: 'POST',
+      url: `/invitations/${invitationId}/revoke`,
+      headers: { cookie: cookie!, 'x-csrf-token': csrfToken },
+    });
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ code: 'INVITATION_REVOKED' });
+
+    const afterRevoke = await server.inject({
+      method: 'GET',
+      url: '/invitations',
+      headers: { cookie: cookie! },
+    });
+    expect(afterRevoke.json().invitations.map((item: { id: string }) => item.id)).not.toContain(
+      invitationId,
+    );
+
+    const accepted = await server.inject({
+      method: 'POST',
+      url: '/auth/invitations/accept',
+      payload: { token, displayName: '撤销后成员', password: 'StrongOperator2026' },
+    });
+    expect(accepted.statusCode).toBe(410);
+    expect(accepted.json()).toMatchObject({ code: 'INVITATION_REVOKED' });
+    const [users] = await pool.query<RowDataPacket[]>(
+      "SELECT id FROM users WHERE email = 'revoked.invited@example.test'",
+    );
+    expect(users).toHaveLength(0);
+    await server.close();
+  });
 });

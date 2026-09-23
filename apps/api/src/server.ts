@@ -17,6 +17,7 @@ import {
   authenticateDevice,
   authenticateSession,
   batchArchiveCandidates,
+  changeMemberRole,
   batchSubmitManualReview,
   deriveSessionCsrfToken,
   CampaignNotActiveError,
@@ -45,6 +46,7 @@ import {
   InvitationAlreadyUsedError,
   InvitationExpiredError,
   InvitationNotFoundError,
+  InvitationRevokedError,
   InvitedEmailAlreadyExistsError,
   InvalidPipelineTransitionError,
   InvalidRunStatusTransitionError,
@@ -64,12 +66,17 @@ import {
   listReadyCollectionRuns,
   listRunObservedCreators,
   listCollectorRuns,
+  listPendingInvitations,
+  revokeInvitation,
   listWorkspaceDevices,
   listWorkspaceMembers,
   hasPermission,
   DeviceAccessDeniedError,
   DeviceNotActiveError,
+  disableUserAccount,
+  enableUserAccount,
   isValidCsrfToken,
+  LastActiveAdminError,
   loginWithPassword,
   MediaObservationAccessDeniedError,
   MediaConfirmationMismatchError,
@@ -95,6 +102,7 @@ import {
   revokeSession,
   rotateDeviceToken,
   RunProgressRegressionError,
+  SelfDisableError,
   SESSION_TTL_SECONDS,
   setCandidateTags,
   startClaimedCollectionRun,
@@ -106,6 +114,7 @@ import {
   updateCampaign,
   updateCampaignTemplate,
   updateCandidateOutreach,
+  UserNotFoundError,
   AliyunObjectStorageClient,
   OutreachVersionConflictError,
 } from '@douyin/domain';
@@ -386,6 +395,41 @@ export function buildServer({
     }
   });
 
+  server.get('/invitations', async (request, reply) => {
+    const principal = await authorizeBrowserRequest(pool, request, reply, 'members:manage');
+    if (!principal) return;
+    return { invitations: await listPendingInvitations(pool, principal.workspaceId) };
+  });
+
+  server.post<{ Params: { invitationId: string } }>(
+    '/invitations/:invitationId/revoke',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(pool, request, reply, 'members:manage', true);
+      if (!principal) return;
+      try {
+        return await revokeInvitation(pool, {
+          actorUserId: principal.userId,
+          invitationId: request.params.invitationId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        if (error instanceof InvitationNotFoundError) {
+          return reply.code(404).send({ code: 'INVITATION_NOT_FOUND' });
+        }
+        if (error instanceof InvitationAlreadyUsedError) {
+          return reply.code(409).send({ code: 'INVITATION_ALREADY_USED' });
+        }
+        if (error instanceof InvitationRevokedError) {
+          return reply.code(409).send({ code: 'INVITATION_REVOKED' });
+        }
+        if (error instanceof Error && error.name === 'ZodError') {
+          return reply.code(400).send({ code: 'INVALID_REQUEST' });
+        }
+        throw error;
+      }
+    },
+  );
+
   server.post<{ Body: unknown }>('/auth/invitations/accept', async (request, reply) => {
     try {
       const accepted = await acceptInvitation(pool, request.body);
@@ -396,6 +440,10 @@ export function buildServer({
       }
       if (error instanceof InvitationExpiredError) {
         return reply.code(410).send({ code: 'INVITATION_EXPIRED' });
+      }
+      // 与自然过期同为 410，但错误码可区分：撤销是管理员的主动动作，界面文案不同。
+      if (error instanceof InvitationRevokedError) {
+        return reply.code(410).send({ code: 'INVITATION_REVOKED' });
       }
       if (error instanceof InvitationAlreadyUsedError) {
         return reply.code(409).send({ code: 'INVITATION_ALREADY_USED' });
@@ -660,6 +708,55 @@ export function buildServer({
         .map((member) => ({ id: member.id, displayName: member.displayName })),
     };
   });
+
+  server.post<{ Params: { userId: string } }>(
+    '/members/:userId/disable',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(pool, request, reply, 'members:manage', true);
+      if (!principal) return;
+      try {
+        return await disableUserAccount(pool, {
+          actorUserId: principal.userId,
+          targetUserId: request.params.userId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        return handleMemberLifecycleError(error, reply);
+      }
+    },
+  );
+
+  server.post<{ Params: { userId: string } }>('/members/:userId/enable', async (request, reply) => {
+    const principal = await authorizeBrowserRequest(pool, request, reply, 'members:manage', true);
+    if (!principal) return;
+    try {
+      return await enableUserAccount(pool, {
+        actorUserId: principal.userId,
+        targetUserId: request.params.userId,
+        workspaceId: principal.workspaceId,
+      });
+    } catch (error) {
+      return handleMemberLifecycleError(error, reply);
+    }
+  });
+
+  server.put<{ Body: unknown; Params: { userId: string } }>(
+    '/members/:userId/role',
+    async (request, reply) => {
+      const principal = await authorizeBrowserRequest(pool, request, reply, 'members:manage', true);
+      if (!principal) return;
+      try {
+        return await changeMemberRole(pool, {
+          ...(request.body as Record<string, unknown>),
+          actorUserId: principal.userId,
+          targetUserId: request.params.userId,
+          workspaceId: principal.workspaceId,
+        });
+      } catch (error) {
+        return handleMemberLifecycleError(error, reply);
+      }
+    },
+  );
 
   server.get('/dashboard', async (request, reply) => {
     const principal = await authorizeBrowserRequest(pool, request, reply, 'candidate:read');
@@ -1478,6 +1575,23 @@ function handleMediaError(error: unknown, reply: FastifyReply) {
   }
   if (error instanceof Error && error.name === 'ZodError') {
     return reply.code(400).send({ code: 'INVALID_MEDIA_UPLOAD' });
+  }
+  throw error;
+}
+
+function handleMemberLifecycleError(error: unknown, reply: FastifyReply) {
+  if (error instanceof UserNotFoundError) {
+    return reply.code(404).send({ code: 'MEMBER_NOT_FOUND' });
+  }
+  // 护栏拒绝要给出可理解原因，且不伴随任何部分生效的变更（领域层已在事务内回滚）。
+  if (error instanceof LastActiveAdminError) {
+    return reply.code(409).send({ code: 'LAST_ACTIVE_ADMIN', message: error.message });
+  }
+  if (error instanceof SelfDisableError) {
+    return reply.code(409).send({ code: 'SELF_DISABLE_NOT_ALLOWED', message: error.message });
+  }
+  if (error instanceof Error && error.name === 'ZodError') {
+    return reply.code(400).send({ code: 'INVALID_MEMBER_REQUEST' });
   }
   throw error;
 }
