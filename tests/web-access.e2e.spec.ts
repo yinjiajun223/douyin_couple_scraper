@@ -310,12 +310,14 @@ test('达人库按跟进阶段分区，不再提供待补证据入口', async ({
   await mockAuthenticatedWorkspace(page, 'operator');
   await page.unroute(candidatesRoute);
   const candidateBase = {
+    archivedAt: null,
     campaignName: '校园任务',
     followerCount: 1_200,
     manualDecision: 'pending',
     observedAt: '2026-09-16T08:00:00.000Z',
     ownerUserId: null,
     tags: [],
+    version: 1,
   };
   const library = [
     { id: 'pending', nickname: '待复核同学', pipelineStatus: 'pending_review' },
@@ -391,6 +393,7 @@ test('达人库支持日期分组、管理员成员筛选和游标加载更多',
   const requestedUrls: string[] = [];
   const now = new Date().toISOString();
   const candidate = (id: string, nickname: string) => ({
+    archivedAt: null,
     campaignName: '日期任务',
     firstVisibleAt: now,
     followerCount: 1_200,
@@ -403,6 +406,7 @@ test('达人库支持日期分组、管理员成员筛选和游标加载更多',
     pipelineStatus: 'pending_review',
     profileUrl: `https://www.douyin.com/user/${id}`,
     tags: [],
+    version: 1,
   });
   await page.route(candidatesRoute, (route) => {
     const url = route.request().url();
@@ -439,6 +443,473 @@ test('达人库支持日期分组、管理员成员筛选和游标加载更多',
     .toBe(true);
   await page.getByRole('button', { name: '加载更多' }).click();
   await expect(page.getByRole('button', { name: /第二页达人/ })).toBeVisible();
+});
+
+/** 详情接口的最小夹具：只放被测界面真正读取的字段，免得每个用例重复三十行。 */
+function candidateDetailFixture(
+  id: string,
+  overrides: {
+    archivedAt?: string | null;
+    nickname?: string;
+    tags?: string[];
+    version?: number;
+  } = {},
+) {
+  const observedAt = new Date().toISOString();
+  const version = overrides.version ?? 1;
+  return {
+    candidate: {
+      archivedAt: overrides.archivedAt ?? null,
+      campaignName: '标签任务',
+      id,
+      pipelineStatus: 'pending_review',
+      tags: overrides.tags ?? [],
+      version,
+    },
+    observations: [
+      {
+        id: `${id}-observation`,
+        nickname: overrides.nickname ?? '详情同学',
+        biography: null,
+        profileUrl: `https://www.douyin.com/user/${id}`,
+        followerCount: 1_200,
+        followerCountRaw: '1200',
+        observedAt,
+        device: { id: 'device-1', name: '运营电脑一号' },
+      },
+    ],
+    sources: [],
+    evaluations: [],
+    media: [],
+    workflow: {
+      candidateVersion: version,
+      pipelineStatus: 'pending_review',
+      reviews: [],
+      outreach: null,
+      notes: [],
+      events: [],
+    },
+  };
+}
+
+/** 达人库列表项夹具：批量操作要按条携带 expectedVersion，所以 version 必填。 */
+function candidateSummaryFixture(
+  id: string,
+  nickname: string,
+  version: number,
+  tags: string[] = [],
+) {
+  const now = new Date().toISOString();
+  return {
+    archivedAt: null,
+    campaignName: '批量任务',
+    firstVisibleAt: now,
+    followerCount: 1_200,
+    id,
+    manualDecision: 'pending',
+    nickname,
+    observedAt: now,
+    ownerUserId: null,
+    pipelineStatus: 'pending_review',
+    profileUrl: `https://www.douyin.com/user/${id}`,
+    tags,
+    version,
+  };
+}
+
+test('批量操作只提交勾选的达人，部分失败按原因归并成一句话', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'operator');
+  await page.unroute(candidatesRoute);
+  const library = [
+    candidateSummaryFixture('batch-a', '批量同学甲', 1),
+    candidateSummaryFixture('batch-b', '批量同学乙', 2),
+    candidateSummaryFixture('batch-c', '批量同学丙', 3),
+  ];
+  const batchRequests: Array<{ body: unknown; url: string }> = [];
+  await page.route(candidatesRoute, (route) =>
+    route.fulfill({ json: { candidates: library, nextCursor: null } }),
+  );
+  await page.route('**/candidates/batch-reviews', (route) => {
+    batchRequests.push({ body: route.request().postDataJSON(), url: route.request().url() });
+    return route.fulfill({
+      json: {
+        failed: 1,
+        results: [
+          { id: 'batch-a', ok: true },
+          { code: 'VERSION_CONFLICT', currentVersion: 9, id: 'batch-c', ok: false },
+        ],
+        succeeded: 1,
+      },
+    });
+  });
+  await page.route('**/candidates/batch-archive', (route) => {
+    batchRequests.push({ body: route.request().postDataJSON(), url: route.request().url() });
+    return route.fulfill({
+      json: { failed: 0, results: [{ id: 'batch-b', ok: true }], succeeded: 1 },
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '达人库', exact: true }).click();
+  await expect(page.locator('.candidate-batch-bar')).toBeVisible();
+  // 没勾选就禁用：空批次只会换来一句「已复核通过 0 条」，运营会以为点错了。
+  await expect(page.getByRole('button', { name: '批量通过复核' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '批量归档' })).toBeDisabled();
+  await page.getByLabel('选择本页全部').check();
+  await expect(page.getByText('已选 3 条')).toBeVisible();
+  await page.getByLabel('选择批量同学乙').uncheck();
+  await expect(page.getByText('已选 2 条')).toBeVisible();
+  await page.getByRole('button', { name: '批量通过复核' }).click();
+  await expect(page.getByRole('status')).toContainText(
+    '已复核通过 1 条，1 条未处理：已被同事修改 1 条',
+  );
+  expect(batchRequests).toHaveLength(1);
+  expect(batchRequests[0]!.url).toContain('/candidates/batch-reviews');
+  expect(batchRequests[0]!.body).toEqual({
+    decision: 'approved',
+    items: [
+      { candidateId: 'batch-a', expectedVersion: 1 },
+      { candidateId: 'batch-c', expectedVersion: 3 },
+    ],
+  });
+  // 提交后清空勾选：留着的话运营再点一次就是重复提交同一批人。
+  await expect(page.getByText('已选 0 条')).toBeVisible();
+  await expect(page.getByLabel('选择批量同学甲')).not.toBeChecked();
+
+  await page.getByLabel('选择批量同学乙').check();
+  await page.getByRole('button', { name: '批量归档' }).click();
+  await expect(page.getByRole('status')).toContainText('已归档 1 条。');
+  expect(batchRequests[1]!.body).toEqual({
+    items: [{ candidateId: 'batch-b', expectedVersion: 2 }],
+  });
+});
+
+test('已归档是独立视图，逐条恢复并带上最新版本号', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'operator');
+  await page.unroute(candidatesRoute);
+  const active = candidateSummaryFixture('active-one', '在用同学', 2);
+  const archived = {
+    ...candidateSummaryFixture('archived-one', '已归档同学', 5),
+    archivedAt: '2026-09-20T08:00:00.000Z',
+    pipelineStatus: 'communicating',
+  };
+  const requestedUrls: string[] = [];
+  await page.route(candidatesRoute, (route) => {
+    const url = route.request().url();
+    requestedUrls.push(url);
+    const isArchivedView = new URL(url).searchParams.get('archiveView') === 'archived';
+    return route.fulfill({
+      json: { candidates: isArchivedView ? [archived] : [active], nextCursor: null },
+    });
+  });
+  const unarchiveRequests: unknown[] = [];
+  await page.route('**/candidates/archived-one/unarchive', (route) => {
+    unarchiveRequests.push(route.request().postDataJSON());
+    return route.fulfill({ json: { id: 'archived-one', version: 6 } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '达人库', exact: true }).click();
+  await expect(page.getByRole('button', { name: /在用同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: '已归档', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await page.getByRole('button', { name: '已归档', exact: true }).click();
+  await expect(page.getByRole('button', { name: /已归档同学/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /在用同学/ })).toHaveCount(0);
+  // 已归档视图不提供批量勾选：恢复是逐条决定，不该被一次全选带走。
+  await expect(page.locator('.candidate-select')).toHaveCount(0);
+  await expect(page.locator('.candidate-batch-bar')).toContainText('已归档视图逐条恢复');
+  await expect
+    .poll(() => requestedUrls.some((url) => url.includes('archiveView=archived')))
+    .toBe(true);
+  await page.getByRole('button', { name: '恢复', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('已恢复「已归档同学」');
+  expect(unarchiveRequests).toEqual([{ expectedVersion: 5 }]);
+  await page.getByRole('button', { name: '在用列表', exact: true }).click();
+  await expect(page.getByRole('button', { name: /在用同学/ })).toBeVisible();
+});
+
+test('详情页可编辑标签，达人库可按标签筛选', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'operator');
+  await page.unroute(candidatesRoute);
+  const library = [
+    candidateSummaryFixture('tagged-one', '校园同学', 4, ['校园']),
+    candidateSummaryFixture('plain-one', '未打标同学', 1),
+  ];
+  const requestedUrls: string[] = [];
+  const tagRequests: unknown[] = [];
+  await page.route(candidatesRoute, (route) => {
+    requestedUrls.push(route.request().url());
+    return route.fulfill({ json: { candidates: library, nextCursor: null } });
+  });
+  await page.route('**/candidates/tagged-one', (route) =>
+    route.fulfill({
+      json: candidateDetailFixture('tagged-one', {
+        nickname: '校园同学',
+        tags: ['校园'],
+        version: 4,
+      }),
+    }),
+  );
+  await page.route('**/candidates/tagged-one/tags', (route) => {
+    tagRequests.push(route.request().postDataJSON());
+    return route.fulfill({ json: { id: 'tagged-one', tags: ['校园', '情侣'] } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '达人库', exact: true }).click();
+  await page.getByRole('button', { name: /校园同学/ }).click();
+  const detail = page.getByRole('article');
+  await expect(detail.getByRole('heading', { name: '标签', exact: true })).toBeVisible();
+  await expect(detail.locator('.tag-chip', { hasText: '校园' })).toBeVisible();
+  await detail.getByLabel('新标签名').fill('情侣');
+  // 回车是「加一个标签」而不是「提交整组」：运营通常连着敲好几个。
+  await detail.getByLabel('新标签名').press('Enter');
+  await expect(detail.locator('.tag-chip', { hasText: '情侣' })).toBeVisible();
+  expect(tagRequests).toHaveLength(0);
+  await detail.getByRole('button', { name: '保存标签' }).click();
+  await expect(detail.getByRole('status')).toContainText('标签已保存');
+  expect(tagRequests).toEqual([{ tags: ['校园', '情侣'] }]);
+
+  await page.getByLabel('按标签筛选').fill('校园, 情侣');
+  await page.getByLabel('按标签筛选').press('Enter');
+  await expect
+    .poll(() =>
+      requestedUrls.some((url) => url.includes('tags=%E6%A0%A1%E5%9B%AD%2C%E6%83%85%E4%BE%A3')),
+    )
+    .toBe(true);
+  await expect(page.getByRole('button', { name: /清除标签筛选：校园,情侣/ })).toBeVisible();
+  await page.getByRole('button', { name: /清除标签筛选/ }).click();
+  await expect.poll(() => requestedUrls.some((url) => !url.includes('tags='))).toBe(true);
+  await expect(page.getByRole('button', { name: /清除标签筛选/ })).toHaveCount(0);
+});
+
+test('成员管理呈现护栏禁用态与说明，操作前都要二次确认', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.unroute('**/members');
+  await page.unroute('**/members/assignable');
+  const members = [
+    {
+      id: 'admin-user',
+      displayName: '管理员同事',
+      email: 'admin@example.test',
+      role: 'admin',
+      status: 'active',
+    },
+    {
+      id: 'admin-b',
+      displayName: '管理员乙',
+      email: 'admin-b@example.test',
+      role: 'admin',
+      status: 'active',
+    },
+    {
+      id: 'operator-user',
+      displayName: '运营同事',
+      email: 'operator@example.test',
+      role: 'operator',
+      status: 'active',
+    },
+    {
+      id: 'disabled-user',
+      displayName: '停用同事',
+      email: 'off@example.test',
+      role: 'operator',
+      status: 'disabled',
+    },
+  ];
+  await page.route('**/members', (route) => route.fulfill({ json: { members } }));
+  await page.route('**/members/assignable', (route) =>
+    route.fulfill({
+      json: {
+        members: members
+          .filter((member) => member.status === 'active')
+          .map((member) => ({ displayName: member.displayName, id: member.id })),
+      },
+    }),
+  );
+  let invitations = [
+    {
+      id: 'invite-1',
+      email: 'newcomer@example.test',
+      role: 'operator',
+      invitedAt: '2026-09-22T02:00:00.000Z',
+      expiresAt: '2026-09-23T02:00:00.000Z',
+      invitedByDisplayName: '管理员同事',
+    },
+  ];
+  await page.route('**/invitations', (route) =>
+    route.request().method() === 'GET'
+      ? route.fulfill({ json: { invitations } })
+      : route.fulfill({ json: { token: 'invite-token' } }),
+  );
+  const memberRequests: Array<{ body: unknown; method: string; url: string }> = [];
+  await page.route(/\/members\/[^/]+\/(?:disable|enable|role)$/u, (route) => {
+    const request = route.request();
+    memberRequests.push({
+      body: request.postDataJSON(),
+      method: request.method(),
+      url: request.url(),
+    });
+    // 停用运营同事时模拟服务端护栏：同事刚刚把另一名管理员停用了。
+    if (request.url().endsWith('/operator-user/disable')) {
+      return route.fulfill({
+        json: {
+          code: 'LAST_ACTIVE_ADMIN',
+          message: '工作区必须保留至少一名启用状态的管理员，请先提升另一名管理员再操作',
+        },
+        status: 409,
+      });
+    }
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route('**/invitations/invite-1/revoke', (route) => {
+    memberRequests.push({
+      body: route.request().postDataJSON(),
+      method: route.request().method(),
+      url: route.request().url(),
+    });
+    invitations = [];
+    return route.fulfill({ json: { ok: true } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '成员与邀请' }).click();
+  const selfRow = page.locator('.member-entry').filter({ hasText: '管理员同事（你）' });
+  // 两名管理员都在，所以自己不是「最后一名」，但停用自己始终被挡住。
+  await expect(selfRow.getByText('不能停用当前登录的自己，请让另一名管理员操作。')).toBeVisible();
+  await expect(selfRow.getByRole('button', { name: '停用' })).toBeDisabled();
+  await expect(selfRow.getByRole('button', { name: '保存角色' })).toBeDisabled();
+
+  const adminBRow = page.locator('.member-entry').filter({ hasText: '管理员乙' });
+  await expect(adminBRow.getByRole('button', { name: '停用' })).toBeEnabled();
+  // FilterSelect 的触发按钮可访问名是「角色 + 当前值」，用 ^角色 才能避开「保存角色」。
+  await adminBRow.getByRole('button', { name: /^角色/u }).click();
+  await adminBRow.getByRole('option', { name: '运营', exact: true }).click();
+  await adminBRow.getByRole('button', { name: '保存角色' }).click();
+  // 降级会移除管理员身份，和停用同级，必须先确认。
+  await expect(adminBRow.getByText(/从管理员降为运营/)).toBeVisible();
+  await adminBRow.getByRole('button', { name: '确认降级' }).click();
+  await expect(page.getByRole('status')).toContainText('已把「管理员乙」的角色改为运营');
+  expect(memberRequests[0]).toMatchObject({
+    body: { role: 'operator' },
+    method: 'PUT',
+  });
+  expect(memberRequests[0]!.url).toContain('/members/admin-b/role');
+
+  const operatorRow = page.locator('.member-entry').filter({ hasText: '运营同事' });
+  await operatorRow.getByRole('button', { name: '停用' }).click();
+  await expect(operatorRow.getByText(/其登录会话与名下采集设备会立即失效/)).toBeVisible();
+  await operatorRow.getByRole('button', { name: '确认停用' }).click();
+  // 护栏拒绝时把服务端原因就地显示，不能只说「操作失败」。
+  await expect(page.getByRole('alert')).toContainText(
+    '工作区必须保留至少一名启用状态的管理员，请先提升另一名管理员再操作',
+  );
+  expect(memberRequests[1]).toMatchObject({ body: null, method: 'POST' });
+  expect(memberRequests[1]!.url).toContain('/members/operator-user/disable');
+
+  const disabledRow = page.locator('.member-entry').filter({ hasText: '停用同事' });
+  await expect(disabledRow.getByRole('button', { name: '停用' })).toHaveCount(0);
+  await disabledRow.getByRole('button', { name: '启用' }).click();
+  await expect(page.getByRole('status')).toContainText('其名下设备保持已撤销');
+  expect(memberRequests[2]!.url).toContain('/members/disabled-user/enable');
+
+  await page.getByRole('button', { name: '撤销邀请' }).click();
+  await expect(page.getByText(/撤销后这条链接立即失效/)).toBeVisible();
+  await page.getByRole('button', { name: '确认撤销' }).click();
+  await expect(page.getByRole('status')).toContainText('已撤销发给 newcomer@example.test 的邀请');
+  await expect(
+    page.getByText('没有待处理的邀请。已被接受、已撤销或已过期的邀请不会出现在这里。'),
+  ).toBeVisible();
+  expect(memberRequests[3]).toMatchObject({ body: null, method: 'POST' });
+});
+
+test('唯一管理员既不能停用也不能降级自己', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.unroute('**/members');
+  await page.route('**/members', (route) =>
+    route.fulfill({
+      json: {
+        members: [
+          {
+            id: 'admin-user',
+            displayName: '管理员同事',
+            email: 'admin@example.test',
+            role: 'admin',
+            status: 'active',
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/invitations', (route) => route.fulfill({ json: { invitations: [] } }));
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '成员与邀请' }).click();
+  const selfRow = page.locator('.member-entry').filter({ hasText: '管理员同事（你）' });
+  await expect(selfRow.getByRole('button', { name: '停用' })).toBeDisabled();
+  await expect(selfRow.getByRole('button', { name: '保存角色' })).toBeDisabled();
+  await expect(
+    selfRow.getByText(
+      '不能停用或降级当前登录的自己：工作区必须保留至少一名启用状态的管理员，请先提升另一名管理员。',
+    ),
+  ).toBeVisible();
+});
+
+test('已停用成员不出现在归属人与运营成员下拉里', async ({ page }) => {
+  await mockAuthenticatedWorkspace(page, 'admin');
+  await page.unroute('**/members');
+  await page.unroute('**/members/assignable');
+  await page.unroute(candidatesRoute);
+  const members = [
+    {
+      id: 'operator-active',
+      displayName: '在岗运营',
+      email: 'active@example.test',
+      role: 'operator',
+      status: 'active',
+    },
+    {
+      id: 'operator-disabled',
+      displayName: '离岗运营',
+      email: 'disabled@example.test',
+      role: 'operator',
+      status: 'disabled',
+    },
+  ];
+  await page.route('**/members', (route) => route.fulfill({ json: { members } }));
+  // /members/assignable 由服务端过滤 status === 'active'（server.ts 的 members/assignable 路由）。
+  await page.route('**/members/assignable', (route) =>
+    route.fulfill({ json: { members: [{ displayName: '在岗运营', id: 'operator-active' }] } }),
+  );
+  await page.route(candidatesRoute, (route) =>
+    route.fulfill({
+      json: {
+        candidates: [candidateSummaryFixture('assign-one', '待分配同学', 1)],
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.route('**/candidates/assign-one', (route) =>
+    route.fulfill({ json: candidateDetailFixture('assign-one', { nickname: '待分配同学' }) }),
+  );
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '达人库', exact: true }).click();
+  await page.getByRole('button', { name: /运营成员/ }).click();
+  await expect(page.getByRole('option', { name: '在岗运营', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: '离岗运营', exact: true })).toHaveCount(0);
+  await page.getByRole('heading', { name: '达人库' }).click();
+  await page.getByRole('button', { name: /待分配同学/ }).click();
+  const detail = page.getByRole('article');
+  await detail.getByText('联系资料与沟通记录（跟进阶段再填）').click();
+  // 负责人下拉来自 /members/assignable，服务端已过滤停用成员；等它加载完再断言选项。
+  await expect(detail.getByRole('button', { name: /^负责人/u })).toContainText('未分配');
+  await detail.getByRole('button', { name: /^负责人/u }).click();
+  await expect(detail.getByRole('option', { name: '在岗运营', exact: true })).toBeVisible();
+  await expect(detail.getByRole('option', { name: '离岗运营', exact: true })).toHaveCount(0);
 });
 
 test('网络失败时显示明确中文状态', async ({ page }) => {
