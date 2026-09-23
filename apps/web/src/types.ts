@@ -3,7 +3,15 @@ import type { CampaignRuleSet } from '@douyin/contracts';
 export type Role = 'admin' | 'operator' | 'readonly';
 
 export type View =
-  'today' | 'campaigns' | 'runs' | 'candidates' | 'members' | 'devices' | 'templates' | 'audit';
+  | 'today'
+  | 'campaigns'
+  | 'runs'
+  | 'candidates'
+  | 'members'
+  | 'devices'
+  | 'templates'
+  | 'audit'
+  | 'help';
 
 export interface CurrentUser {
   id: string;

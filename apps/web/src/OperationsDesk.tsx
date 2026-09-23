@@ -22,6 +22,7 @@ import { TemplatesPage } from './pages/TemplatesPage';
 import { AuditPage } from './pages/AuditPage';
 import { MembersPage } from './pages/MembersPage';
 import { DevicesPage } from './pages/DevicesPage';
+import { HelpPage } from './pages/HelpPage';
 
 export function OperationsDesk({
   user,
@@ -234,6 +235,8 @@ export function OperationsDesk({
               setView('candidates');
             }}
           />
+          <span className="nav-section-label">支持</span>
+          <NavButton active={view === 'help'} label="操作手册" onClick={() => setView('help')} />
           {canManageMembers || canManageDevices ? (
             <span className="nav-section-label">管理与设置</span>
           ) : null}
@@ -377,6 +380,7 @@ export function OperationsDesk({
             />
           ) : null}
           {view === 'audit' && canManageMembers ? <AuditPage events={auditEvents} /> : null}
+          {view === 'help' ? <HelpPage role={user.role} /> : null}
         </main>
       </div>
     </div>

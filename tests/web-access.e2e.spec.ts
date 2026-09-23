@@ -686,7 +686,7 @@ test('详情页可编辑标签，达人库可按标签筛选', async ({ page }) 
   await expect(page.getByRole('button', { name: /清除标签筛选/ })).toHaveCount(0);
 });
 
-test('成员管理呈现护栏禁用态与说明，操作前都要二次确认', async ({ page }) => {
+test('成员管理呈现护栏禁用态与说明，操作前都要二次确认', async ({ page }, testInfo) => {
   await mockAuthenticatedWorkspace(page, 'admin');
   await page.unroute('**/members');
   await page.unroute('**/members/assignable');
@@ -783,11 +783,33 @@ test('成员管理呈现护栏禁用态与说明，操作前都要二次确认',
   await expect(selfRow.getByRole('button', { name: '停用' })).toBeDisabled();
   await expect(selfRow.getByRole('button', { name: '保存角色' })).toBeDisabled();
 
+  const lastMemberRow = page.locator('.member-entry').filter({ hasText: '停用同事' });
+  const lastRoleTrigger = lastMemberRow.getByRole('button', { name: /^角色/u });
+  await lastRoleTrigger.scrollIntoViewIfNeeded();
+  await lastRoleTrigger.click();
+  const roleListbox = page.getByRole('listbox');
+  await expect(roleListbox).toBeVisible();
+  expect(await roleListbox.evaluate((element) => element.parentElement === document.body)).toBe(
+    true,
+  );
+  const listboxBounds = await roleListbox.boundingBox();
+  const viewport = page.viewportSize();
+  expect(listboxBounds).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(listboxBounds!.y).toBeGreaterThanOrEqual(0);
+  expect(listboxBounds!.y + listboxBounds!.height).toBeLessThanOrEqual(viewport!.height);
+  await testInfo.attach('member-last-row-role-popover', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await page.keyboard.press('Escape');
+  await expect(roleListbox).toHaveCount(0);
+
   const adminBRow = page.locator('.member-entry').filter({ hasText: '管理员乙' });
   await expect(adminBRow.getByRole('button', { name: '停用' })).toBeEnabled();
   // FilterSelect 的触发按钮可访问名是「角色 + 当前值」，用 ^角色 才能避开「保存角色」。
   await adminBRow.getByRole('button', { name: /^角色/u }).click();
-  await adminBRow.getByRole('option', { name: '运营', exact: true }).click();
+  await page.getByRole('option', { name: '运营', exact: true }).click();
   await adminBRow.getByRole('button', { name: '保存角色' }).click();
   // 降级会移除管理员身份，和停用同级，必须先确认。
   await expect(adminBRow.getByText(/从管理员降为运营/)).toBeVisible();
@@ -858,7 +880,7 @@ test('唯一管理员既不能停用也不能降级自己', async ({ page }) => 
   ).toBeVisible();
 });
 
-test('已停用成员不出现在归属人与运营成员下拉里', async ({ page }) => {
+test('已停用成员不出现在归属人与运营成员下拉里', async ({ page }, testInfo) => {
   await mockAuthenticatedWorkspace(page, 'admin');
   await page.unroute('**/members');
   await page.unroute('**/members/assignable');
@@ -908,8 +930,12 @@ test('已停用成员不出现在归属人与运营成员下拉里', async ({ pa
   // 负责人下拉来自 /members/assignable，服务端已过滤停用成员；等它加载完再断言选项。
   await expect(detail.getByRole('button', { name: /^负责人/u })).toContainText('未分配');
   await detail.getByRole('button', { name: /^负责人/u }).click();
-  await expect(detail.getByRole('option', { name: '在岗运营', exact: true })).toBeVisible();
-  await expect(detail.getByRole('option', { name: '离岗运营', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('option', { name: '在岗运营', exact: true })).toBeVisible();
+  await expect(page.getByRole('option', { name: '离岗运营', exact: true })).toHaveCount(0);
+  await testInfo.attach('candidate-detail-owner-popover', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
 });
 
 test('网络失败时显示明确中文状态', async ({ page }) => {
@@ -922,7 +948,7 @@ test('网络失败时显示明确中文状态', async ({ page }) => {
 });
 
 for (const role of ['admin', 'operator', 'readonly'] as const) {
-  test(`${labels[role]}只看到角色允许的管理操作`, async ({ page }) => {
+  test(`${labels[role]}只看到角色允许的管理操作`, async ({ page }, testInfo) => {
     await mockAuthenticatedWorkspace(page, role);
     await page.goto('/');
     await expect(page.getByText(`${labels[role]}同事`)).toBeVisible();
@@ -949,6 +975,20 @@ for (const role of ['admin', 'operator', 'readonly'] as const) {
       await expect(page.getByRole('button', { name: '筛选模板' })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '审计记录' })).toHaveCount(0);
       await expect(page.getByText('编辑操作由运营成员完成')).toBeVisible();
+    }
+
+    const helpButton = page.getByRole('button', { name: '操作手册' });
+    await expect(helpButton).toBeVisible();
+    await helpButton.click();
+    await expect(page.getByRole('heading', { name: '操作手册' })).toBeVisible();
+    if (role === 'admin') {
+      await expect(page.getByRole('heading', { name: '管理员护栏与救援路径' })).toBeVisible();
+      await testInfo.attach('admin-operator-manual', {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: 'image/png',
+      });
+    } else {
+      await expect(page.getByRole('heading', { name: '管理员护栏与救援路径' })).toHaveCount(0);
     }
   });
 }

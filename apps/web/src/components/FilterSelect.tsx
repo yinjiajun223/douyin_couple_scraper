@@ -1,5 +1,17 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
+
+const POPOVER_GAP = 7;
+const VIEWPORT_MARGIN = 8;
+
+interface PopoverPosition {
+  left: number;
+  maxHeight: number;
+  placement: 'above' | 'below';
+  top: number;
+  width: number;
+}
 
 export function FilterSelect({
   disabled = false,
@@ -22,7 +34,9 @@ export function FilterSelect({
   const listboxId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
   const selectedIndex = Math.max(
     0,
     options.findIndex((option) => option.value === value),
@@ -35,7 +49,10 @@ export function FilterSelect({
       optionRefs.current[selectedIndex]?.focus();
     });
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+        setOpen(false);
+      }
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     return () => {
@@ -43,6 +60,56 @@ export function FilterSelect({
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
     };
   }, [open, selectedIndex]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPopoverPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const popover = popoverRef.current;
+      if (!trigger || !popover) return;
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const triggerOutsideViewport =
+        triggerRect.bottom <= 0 ||
+        triggerRect.right <= 0 ||
+        triggerRect.top >= window.innerHeight ||
+        triggerRect.left >= window.innerWidth;
+      if (triggerOutsideViewport) {
+        setOpen(false);
+        return;
+      }
+
+      const width = Math.min(triggerRect.width, window.innerWidth - VIEWPORT_MARGIN * 2);
+      const measuredHeight = popover.scrollHeight;
+      const spaceBelow = window.innerHeight - triggerRect.bottom - POPOVER_GAP - VIEWPORT_MARGIN;
+      const spaceAbove = triggerRect.top - POPOVER_GAP - VIEWPORT_MARGIN;
+      const placement = measuredHeight > spaceBelow && spaceAbove > spaceBelow ? 'above' : 'below';
+      const maxHeight = Math.max(0, placement === 'above' ? spaceAbove : spaceBelow);
+      const visibleHeight = Math.min(measuredHeight, maxHeight);
+      const top =
+        placement === 'above'
+          ? Math.max(VIEWPORT_MARGIN, triggerRect.top - POPOVER_GAP - visibleHeight)
+          : triggerRect.bottom + POPOVER_GAP;
+      const left = Math.min(
+        Math.max(VIEWPORT_MARGIN, triggerRect.left),
+        Math.max(VIEWPORT_MARGIN, window.innerWidth - VIEWPORT_MARGIN - width),
+      );
+
+      setPopoverPosition({ left, maxHeight, placement, top, width });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open, options.length]);
 
   function moveOptionFocus(index: number, direction: 1 | -1) {
     const nextIndex = (index + direction + options.length) % options.length;
@@ -92,33 +159,53 @@ export function FilterSelect({
         <span aria-hidden="true" className="filter-select-chevron" />
       </button>
       {name ? <input disabled={disabled} name={name} type="hidden" value={value} /> : null}
-      {open ? (
-        <div className="filter-select-popover" id={listboxId} role="listbox">
-          {options.map((option, index) => (
-            <button
-              aria-selected={option.value === value}
-              className="filter-select-option"
-              key={option.value || 'all'}
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-                triggerRef.current?.focus();
-              }}
-              onKeyDown={(event) => handleOptionKeyDown(event, index)}
-              ref={(element) => {
-                optionRefs.current[index] = element;
-              }}
-              role="option"
-              type="button"
+      {open
+        ? createPortal(
+            <div
+              className="filter-select-popover"
+              data-placement={popoverPosition?.placement}
+              id={listboxId}
+              ref={popoverRef}
+              role="listbox"
+              style={
+                popoverPosition
+                  ? {
+                      left: popoverPosition.left,
+                      maxHeight: popoverPosition.maxHeight,
+                      top: popoverPosition.top,
+                      visibility: 'visible',
+                      width: popoverPosition.width,
+                    }
+                  : { visibility: 'hidden' }
+              }
             >
-              <span>{option.label}</span>
-              <span aria-hidden="true" className="filter-select-check">
-                {option.value === value ? '✓' : ''}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+              {options.map((option, index) => (
+                <button
+                  aria-selected={option.value === value}
+                  className="filter-select-option"
+                  key={option.value || 'all'}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                    triggerRef.current?.focus();
+                  }}
+                  onKeyDown={(event) => handleOptionKeyDown(event, index)}
+                  ref={(element) => {
+                    optionRefs.current[index] = element;
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <span>{option.label}</span>
+                  <span aria-hidden="true" className="filter-select-check">
+                    {option.value === value ? '✓' : ''}
+                  </span>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

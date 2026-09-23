@@ -88,14 +88,26 @@ export function DevicesPage({
         <div>
           <strong>首次连接，只需配对一次。</strong>
           <p>
-            生成配对码 → 打开本机助手 →
-            填写设备名称和配对码。配对成功后，设备列表会自动更新。助手打不开时，请先运行 npm run
-            dev:local。
+            生成配对码后，在已经启动的本机助手填写设备名称和配对码。助手启动时会自动打开控制页；
+            如果没有自动打开，请把右侧地址复制到当前电脑的浏览器访问。
           </p>
         </div>
-        <a className="secondary-action" href={COLLECTOR_URL} target="_blank" rel="noreferrer">
-          打开本机助手 ↗
-        </a>
+        <div className="collector-control-address">
+          <span>本机控制页</span>
+          <code>{COLLECTOR_URL}</code>
+          <button
+            className="text-button dark-text-button"
+            onClick={() =>
+              void navigator.clipboard
+                .writeText(COLLECTOR_URL)
+                .then(() => setMessage('本机控制页地址已复制。'))
+                .catch(() => setMessage('浏览器不允许自动复制，请手动选择地址复制。'))
+            }
+            type="button"
+          >
+            复制地址
+          </button>
+        </div>
       </div>
       {message ? (
         <p className="notice-banner" role="status">

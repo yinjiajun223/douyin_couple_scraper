@@ -330,7 +330,7 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await page.getByRole('button', { name: /二号同学/ }).click();
     const reviewForm = page.locator('form.workflow-form').filter({ hasText: '复核结论' });
     await reviewForm.getByRole('button', { name: /^结论/u }).click();
-    await reviewForm.getByRole('option', { name: '不符合', exact: true }).click();
+    await page.getByRole('option', { name: '不符合', exact: true }).click();
     await reviewForm.getByText('补充理由（可选）').click();
     await reviewForm.getByLabel('理由', { exact: true }).fill('人设与校园情侣定位不符');
     await page.getByRole('button', { name: '保存人工结论' }).click();
@@ -554,7 +554,7 @@ test('管理员在真实工作区走查批量复核、标签、归档与成员�
 
     const memberRow = page.locator('.member-entry').filter({ hasText: '走查运营' });
     await memberRow.getByRole('button', { name: /^角色/u }).click();
-    await memberRow.getByRole('option', { name: '管理员', exact: true }).click();
+    await page.getByRole('option', { name: '管理员', exact: true }).click();
     await memberRow.getByRole('button', { name: '保存角色' }).click();
     await expect(page.getByRole('status')).toContainText('已把「走查运营」的角色改为管理员');
     // 护栏文案是算出来的：多出第二名启用管理员后，「最后一名管理员」那半句就消失了。
@@ -563,7 +563,7 @@ test('管理员在真实工作区走查批量复核、标签、归档与成员�
 
     // 降级会移除管理员身份，和停用一样要二次确认。
     await memberRow.getByRole('button', { name: /^角色/u }).click();
-    await memberRow.getByRole('option', { name: '运营', exact: true }).click();
+    await page.getByRole('option', { name: '运营', exact: true }).click();
     await memberRow.getByRole('button', { name: '保存角色' }).click();
     await expect(memberRow.getByText(/从管理员降为运营/)).toBeVisible();
     await memberRow.getByRole('button', { name: '确认降级' }).click();
@@ -599,12 +599,8 @@ test('管理员在真实工作区走查批量复核、标签、归档与成员�
     await assignDetail.getByText('联系资料与沟通记录（跟进阶段再填）').click();
     await expect(assignDetail.getByRole('button', { name: /^负责人/u })).toContainText('未分配');
     await assignDetail.getByRole('button', { name: /^负责人/u }).click();
-    await expect(
-      assignDetail.getByRole('option', { name: '走查管理员', exact: true }),
-    ).toBeVisible();
-    await expect(assignDetail.getByRole('option', { name: '走查运营', exact: true })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole('option', { name: '走查管理员', exact: true })).toBeVisible();
+    await expect(page.getByRole('option', { name: '走查运营', exact: true })).toHaveCount(0);
 
     // 启用只恢复账号，不恢复设备：本人必须在本机重新配对。
     await page.getByRole('button', { name: '成员与邀请' }).click();

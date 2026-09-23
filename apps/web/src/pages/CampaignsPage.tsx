@@ -3,7 +3,6 @@ import type { FormEvent } from 'react';
 
 import type { CampaignSummary, CampaignTemplateSummary } from '../types';
 import { readResponse } from '../api/client';
-import { COLLECTOR_URL } from '../constants';
 import {
   buildRuleSet,
   describeRuleSet,
@@ -237,9 +236,6 @@ export function CampaignsPage({
           <strong>任务保存条件，运行才会进入采集队列。</strong>
           <p>保存后点击「创建运行」，再到本机助手开始。网页不会远程操作你的抖音账号。</p>
         </div>
-        <a href={COLLECTOR_URL} target="_blank" rel="noreferrer" className="secondary-action">
-          打开本机助手 ↗
-        </a>
       </div>
       {runMessage ? (
         <div className="success-banner" role="status">
