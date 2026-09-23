@@ -21,3 +21,7 @@ data/*.csv
 data/*.json
 data/*.html
 
+# 本地侧载镜像与发布前配置备份体积较大，只保留在交付电脑。
+release/douyin-ops-images-*.tar
+release/douyin-ops-images-*.tar.sha256
+release/*.prev-*
