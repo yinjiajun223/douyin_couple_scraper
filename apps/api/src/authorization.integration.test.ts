@@ -542,6 +542,54 @@ describeWithMysql('角色 API 权限矩阵', () => {
     expect(restored.json()).toEqual({ id: candidateId, version: 4 });
     await server.close();
   });
+
+  it('达人库列表按 archiveView 在用与已归档之间切换，拼错的取值回落在用视图', async () => {
+    const server = buildServer({ pool, logger: false, secureCookies: true });
+    const operator = await login(server, 'operator');
+    const candidateId = '1a000000-0000-4000-8000-000000000016';
+    const operatorHeaders = { cookie: operator.cookie, 'x-csrf-token': operator.csrfToken };
+    const idsIn = (url: string) =>
+      server
+        .inject({ method: 'GET', url, headers: { cookie: operator.cookie } })
+        .then((response) => {
+          expect(response.statusCode).toBe(200);
+          return {
+            ids: (response.json().candidates as Array<{ id: string }>).map((item) => item.id),
+            rows: response.json().candidates as Array<{ archivedAt: string | null }>,
+          };
+        });
+
+    // 领域层早就支持 archiveView，路由不透传时「已归档」视图会静默返回在用列表，
+    // 所以这里从 HTTP 入口断言，而不是只测领域函数。
+    expect((await idsIn('/candidates?limit=50')).ids).toContain(candidateId);
+
+    const archived = await server.inject({
+      method: 'POST',
+      url: `/candidates/${candidateId}/archive`,
+      headers: operatorHeaders,
+      payload: { expectedVersion: 4 },
+    });
+    expect(archived.statusCode).toBe(200);
+
+    const activeView = await idsIn('/candidates?limit=50');
+    expect(activeView.ids).not.toContain(candidateId);
+    const archivedView = await idsIn('/candidates?limit=50&archiveView=archived');
+    expect(archivedView.ids).toEqual([candidateId]);
+    expect(archivedView.rows[0]?.archivedAt).not.toBeNull();
+    const typoView = await idsIn('/candidates?limit=50&archiveView=everything');
+    expect(typoView.ids).not.toContain(candidateId);
+
+    const restored = await server.inject({
+      method: 'POST',
+      url: `/candidates/${candidateId}/unarchive`,
+      headers: operatorHeaders,
+      payload: { expectedVersion: 5 },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json()).toEqual({ id: candidateId, version: 6 });
+    await server.close();
+  });
+
   it('成员停用、启用与改角色只属于管理员，护栏拒绝时给出原因且无部分生效', async () => {
     const server = buildServer({ pool, logger: false, secureCookies: true });
     const admin = await login(server, 'admin');

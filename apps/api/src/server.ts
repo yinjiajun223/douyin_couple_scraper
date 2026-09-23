@@ -859,6 +859,7 @@ export function buildServer({
 
   server.get<{
     Querystring: {
+      archiveView?: string;
       campaignId?: string;
       cursor?: string;
       discoveredFrom?: string;
@@ -885,6 +886,9 @@ export function buildServer({
         actorRole: principal.role,
         actorUserId: principal.userId,
         workspaceId: principal.workspaceId,
+        // 只认精确的 'archived'：其他取值一律回落到默认的在用视图，
+        // 免得拼错的参数把已归档达人混进运营的日常列表。
+        ...(query.archiveView === 'archived' ? { archiveView: 'archived' as const } : {}),
         ...(query.campaignId ? { campaignId: query.campaignId } : {}),
         ...(query.cursor ? { cursor: query.cursor } : {}),
         ...(query.discoveredFrom ? { discoveredFrom: query.discoveredFrom } : {}),
