@@ -60,6 +60,7 @@ function Write-Utf8NoBomCrLf([string]$Path, [string]$Content) {
 try {
   New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
   New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+  $buildStarted = Get-Date
 
   Push-Location $repoRoot
   try {
@@ -71,6 +72,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'domain build failed' }
     & npm.cmd run build -w '@douyin/collector'
     if ($LASTEXITCODE -ne 0) { throw 'collector build failed' }
+    # npm.cmd can report success even when a workspace lifecycle script failed;
+    # refuse to package stale compiler output either way.
+    $distRuntime = Join-Path $repoRoot 'apps/collector/dist/runtime.js'
+    if (-not (Test-Path -LiteralPath $distRuntime) -or
+      (Get-Item -LiteralPath $distRuntime).LastWriteTime -lt $buildStarted) {
+      throw 'collector build did not refresh dist; refusing to package stale output'
+    }
   } finally {
     Pop-Location
   }
