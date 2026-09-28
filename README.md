@@ -27,6 +27,12 @@
 
 长运行并不等于绕过平台限制或无人值守守护：电脑和助手进程必须保持运行且系统不得休眠；自动恢复仅维持当前已人工开始的运行，不会处理验证码、自动启动下一运行或保证任何平台状态下绝对连续 24 小时。本机控制页会显示恢复类别、阶段、次数、下次尝试时间和结果，脱敏恢复日志保存在共享 `data/diagnostics` 目录并限制为 3 个文件。
 
+v0.1.7 新增本机“最近错误诊断”，保留出错步骤、时间、错误类型和白名单代码，继续或重启不清空，页面展示最近 20 条。错误日志与恢复日志各最多 3 个 1 MiB 文件，自动轮换；不保存原始报错消息、完整堆栈或敏感信息，不上传诊断。此项用于收集下一次异常的排查证据，不代表旧故障已定位或修复。
+
+v0.1.8 修复普通作品文案提到“验证码”等词就误暂停的问题，改为识别验证地址、可见验证界面和明确提示；真实验证仍暂停。安全暂停也记录推荐页/作者页及固定触发依据，便于人工核对。浏览器 DOM 回归：构建采集器后运行 `node scripts/test-collector-safety-dom.mjs`，使用隔离 Chrome 与本地模拟页面，不访问运营账号。
+
+v0.1.9 为作者作品接口正文的补充证据等待设置 5 秒上限，避免响应不结束导致一直“采集中”且人工暂停也等待；到期仍检查页面安全状态，只使用已获得证据，缺失信息保持未知。控制页新增当前步骤、作者核验子步骤与等待时长，并给历史恢复记录显示发生时间。这不代表已消除所有浏览器卡死，详见 `docs/releases/collector-v0.1.9.md`。
+
 ## 文档入口
 
 - [产品使用手册](docs/product-manual.md)：管理员、运营人员和普通成员的完整使用流程。
@@ -87,13 +93,13 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.6 `
+  -Version 0.1.9 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.6.zip
+  -PackagePath artifacts/collector-windows-v0.1.9.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
@@ -104,13 +110,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```bash
 bash scripts/build-collector-macos.sh \
-  --version 0.1.6 \
+  --version 0.1.9 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
 
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.6.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.9.tar.gz'
 ```
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。

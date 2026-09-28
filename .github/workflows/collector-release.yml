@@ -6,7 +6,7 @@ on:
       version:
         description: Collector version from apps/collector/package.json
         required: true
-        default: 0.1.6
+        default: 0.1.9
       api_base_url:
         description: Production HTTPS API base URL embedded in the packages
         required: true

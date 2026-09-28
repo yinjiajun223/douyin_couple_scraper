@@ -28,6 +28,37 @@ const progress = {
 };
 
 describe('采集 fail-closed 安全闸门', () => {
+  it('查询参数、作者标识和作品标题提到 verifycenter 不算验证地址', () => {
+    expect(
+      detectCollectionSafetyIssue({
+        bodyText: '正常作者 作品',
+        title: '安全验证科普作者',
+        url: 'https://www.douyin.com/user/verifycenter-author?next=/verifycenter',
+      }),
+    ).toBeNull();
+    expect(
+      detectCollectionSafetyIssue({
+        bodyText: '',
+        url: 'https://www.douyin.com/verifycenter?token=private-marker',
+      }),
+    ).toMatchObject({ code: 'captcha_required', evidence: 'CAPTCHA_VERIFICATION_URL' });
+  });
+
+  it.each([
+    '反诈科普：不要把验证码告诉陌生人',
+    '汽车安全验证测试记录',
+    '作品介绍：拖动滑块完成验证是什么体验',
+  ])('普通作品文字不触发验证码暂停：%s', (bodyText) => {
+    expect(
+      detectCollectionSafetyIssue({
+        bodyText,
+        title: '测试作者的抖音主页',
+        url: 'https://www.douyin.com/user/normal-author',
+        parserConfidence: 0.99,
+      }),
+    ).toBeNull();
+  });
+
   it.each([
     ['login_required', 'https://www.douyin.com/login', fixtures.login_required],
     ['captcha_required', 'https://www.douyin.com/verifycenter', fixtures.captcha_required],

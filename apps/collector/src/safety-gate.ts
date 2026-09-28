@@ -1,4 +1,5 @@
 import type { CollectorRunProgress } from '@douyin/contracts';
+import type { CaptchaEvidence } from './captcha-evidence.js';
 
 export const DOUYIN_MIN_PARSER_CONFIDENCE = 0.75;
 export const LOW_CONFIDENCE_CONSECUTIVE_LIMIT_MAX = 1_000;
@@ -25,6 +26,7 @@ export interface CollectionSafetyIssue {
   humanMessage: string;
   navigationErrorCode?: string;
   statusCode?: number;
+  evidence?: CaptchaEvidence;
 }
 
 export interface CollectionPageSnapshot {
@@ -34,6 +36,7 @@ export interface CollectionPageSnapshot {
   statusCode?: number;
   title?: string;
   url: string;
+  captchaEvidence?: CaptchaEvidence | null;
 }
 
 export interface SafetyPausePersistence {
@@ -97,10 +100,27 @@ export function detectCollectionSafetyIssue(
       humanMessage: '抖音登录状态已失效。进度已保存，请人工在可见浏览器中重新登录后手动继续。',
     };
   }
-  if (/(安全验证|验证码|拖动滑块|完成验证|verifycenter)/iu.test(`${snapshot.url}\n${searchable}`)) {
+  let captchaEvidence = snapshot.captchaEvidence;
+  try {
+    if (/(?:^|\/)(?:verifycenter|captcha)(?:\/|$)/iu.test(new URL(snapshot.url).pathname))
+      captchaEvidence = 'CAPTCHA_VERIFICATION_URL';
+  } catch {
+    /* Invalid URLs do not provide verification evidence. */
+  }
+  // Non-browser callers can identify a whole-document instruction, never a substring
+  // in an author's title, ordinary caption, URL query or profile identifier.
+  if (
+    captchaEvidence === undefined &&
+    /^(?:请(?:先|您)?\s*)?(?:完成(?:安全)?验证|拖动滑块(?:完成(?:安全)?验证)?|安全验证)[。！!]?$/u.test(
+      snapshot.bodyText.trim(),
+    )
+  )
+    captchaEvidence = 'CAPTCHA_DOCUMENT_PROMPT';
+  if (captchaEvidence) {
     return {
       code: 'captcha_required',
       humanMessage: '抖音要求人工完成安全验证。进度已保存，采集已暂停，不会尝试绕过验证。',
+      evidence: captchaEvidence,
     };
   }
   if (

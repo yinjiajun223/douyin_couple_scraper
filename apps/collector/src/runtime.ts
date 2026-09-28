@@ -20,11 +20,13 @@ import type { BrowserContext, Page, Response as PlaywrightResponse } from 'playw
 import { launchSelectedCollectorProfile } from './browser-profiles.js';
 import type { CollectorBrowserProfileStore } from './browser-profiles.js';
 import type { CollectorControlApiClient, RemoteRun } from './control-server.js';
+import { createErrorDiagnostic, ErrorDiagnosticLog } from './error-diagnostics.js';
+import type { DiagnosticOperation, ErrorDiagnostic } from './error-diagnostics.js';
 import { PersistentIngestionQueue } from './ingestion-queue.js';
 import type { UploadScreenshotInput } from './media-upload.js';
 import { inspectDouyinCreatorProfile } from './profile-inspection.js';
 import { DouyinProfileSafetyError } from './profile-inspection.js';
-import type { DouyinProfileInspection } from './profile-inspection.js';
+import type { DouyinProfileInspection, ProfileInspectionStage } from './profile-inspection.js';
 import { collectVisibleRecommendationFeed } from './recommendation-feed.js';
 import {
   createIdleRecoveryCheckpoint,
@@ -45,6 +47,7 @@ import {
 } from './safety-gate.js';
 import type { CollectionSafetyIssue, LowConfidencePolicy } from './safety-gate.js';
 import { COLLECTOR_VERSION } from './version.js';
+import { readCaptchaEvidence } from './captcha-evidence.js';
 
 const EMPTY_FEED_RECOVERY_INITIAL_PASSES = 8;
 const EMPTY_FEED_RECOVERY_MAX_INTERVAL = 64;
@@ -107,12 +110,23 @@ export class CollectorRuntime {
   private readonly plannedContextClosures = new Set<number>();
   private readonly recoveryLog: RecoveryEventLog;
   private lastRecoveryLogFingerprint: string | null = null;
+  private readonly errorLog: ErrorDiagnosticLog;
+  private errorDiagnostics: ErrorDiagnostic[] = [];
+  private diagnosticStorageError = false;
+  private readonly failureOperations = new WeakMap<object, DiagnosticOperation>();
+  private readonly activeOperations = new Map<
+    symbol,
+    { operation: DiagnosticOperation; startedAt: number }
+  >();
+  private profileInspectionStage: { stage: ProfileInspectionStage; startedAt: number } | null =
+    null;
 
   public constructor(private readonly options: CollectorRuntimeOptions) {
     this.directory = path.join(options.profileStore.dataRoot, 'runs');
     this.settingsPath = path.join(options.profileStore.dataRoot, 'collector-settings.json');
     this.queue = new PersistentIngestionQueue(options.profileStore.dataRoot);
     this.recoveryLog = new RecoveryEventLog(options.profileStore.dataRoot);
+    this.errorLog = new ErrorDiagnosticLog(options.profileStore.dataRoot);
   }
 
   public assertIdle(): void {
@@ -127,6 +141,10 @@ export class CollectorRuntime {
   }
 
   private async restorePendingCheckpoint(): Promise<void> {
+    this.errorDiagnostics = await this.errorLog.recent().catch(() => {
+      this.diagnosticStorageError = true;
+      return [];
+    });
     await mkdir(this.directory, { recursive: true });
     await this.restoreSettings();
     for (const name of await readdir(this.directory)) {
@@ -143,8 +161,25 @@ export class CollectorRuntime {
   }
 
   public async status() {
+    const current = [...this.activeOperations.values()].at(-1);
+    const detail = current?.operation === 'inspect_profile' ? this.profileInspectionStage : null;
     return {
+      currentOperation: current
+        ? {
+            operation: current.operation,
+            stage: detail?.stage ?? null,
+            startedAt: new Date(detail?.startedAt ?? current.startedAt).toISOString(),
+            elapsedSeconds: Math.max(
+              0,
+              Math.floor((this.now() - (detail?.startedAt ?? current.startedAt)) / 1000),
+            ),
+          }
+        : null,
+      stopping: this.stopped && Boolean(this.activeRunId),
       lastErrorCode: this.lastErrorCode,
+      collectorVersion: COLLECTOR_VERSION,
+      errorDiagnostics: this.errorDiagnostics,
+      diagnosticStorageError: this.diagnosticStorageError,
       activeRunId: this.activeRunId,
       busy: this.busy,
       browserOpen: Boolean(this.context),
@@ -235,7 +270,9 @@ export class CollectorRuntime {
     let remoteRunning = false;
     try {
       if (!/^[0-9a-f-]{36}$/iu.test(runId)) throw new Error('运行标识无效。');
-      const run = (await this.options.apiClient.syncRuns()).find((entry) => entry.id === runId);
+      const run = (
+        await this.inOperation('sync_runs', () => this.options.apiClient.syncRuns())
+      ).find((entry) => entry.id === runId);
       if (!run || !['ready', 'claimed', 'running', 'paused'].includes(run.status))
         throw new Error('运行已结束或被其他设备领取，请刷新任务。');
       const rules = parseCampaignRuleSet(run.rules);
@@ -251,10 +288,10 @@ export class CollectorRuntime {
       this.checkpoint = await this.loadCheckpoint(runId, profile.id, run.progress);
       if (this.checkpoint.profileId !== profile.id)
         throw new Error('这次运行绑定了另一个画像，请切回原画像后继续。');
-      await this.openBrowser();
+      await this.inOperation('open_browser', () => this.openBrowser());
       if (!this.feedPage || !this.context) throw new Error('浏览器未打开，请重试。');
-      await this.assertSafe(this.feedPage);
-      await this.options.apiClient.getDevice();
+      await this.inOperation('check_safety', () => this.assertSafe(this.feedPage!));
+      await this.inOperation('get_device', () => this.options.apiClient.getDevice());
       if (run.status === 'ready' || run.status === 'claimed') {
         await this.options.apiClient.startRun(runId, run.status === 'ready');
       } else if (run.status === 'paused') {
@@ -270,13 +307,25 @@ export class CollectorRuntime {
       this.work = this.collect({ ...run, rules })
         .catch(async (error: unknown) => {
           if (error instanceof RecoveryCancelledError) return;
-          this.lastErrorCode = error instanceof Error ? error.name : 'UnknownError';
+          if (error instanceof CollectionPausedError) {
+            this.lastErrorCode = 'Error';
+            if (error.issue)
+              await this.recordError(
+                error,
+                runId,
+                error.pageType === 'profile' ? 'check_profile_safety' : 'check_feed_safety',
+              );
+          } else {
+            const diagnostic = await this.recordError(error, runId, 'collect');
+            this.lastErrorCode = diagnostic.errorType;
+          }
           if (this.checkpoint) {
             this.checkpoint.message =
               error instanceof CollectionPausedError
                 ? error.message
-                : '发生未能安全归类的错误，采集已安全暂停且进度保存在本机。请人工检查浏览器、网络和本机诊断后再继续。';
-            await this.saveCheckpoint().catch(() => {
+                : '发生未能安全归类的错误，采集已安全暂停。请查看下方“最近错误诊断”；继续后历史记录仍保留。';
+            await this.saveCheckpoint().catch(async (checkpointError: unknown) => {
+              await this.recordError(checkpointError, runId, 'save_checkpoint');
               this.lastErrorCode = 'CheckpointWriteError';
               this.checkpoint!.message =
                 '本地进度写入失败，采集已停止。请先检查磁盘空间和数据目录权限。';
@@ -289,6 +338,8 @@ export class CollectorRuntime {
           this.work = null;
         });
     } catch (error) {
+      if (!(error instanceof CollectionPausedError)) await this.recordError(error, runId, 'start');
+      else if (error.issue) await this.recordError(error, runId, 'check_feed_safety');
       if (remoteRunning)
         await this.options.apiClient.changeRunStatus(runId, 'pause').catch(() => undefined);
       throw error;
@@ -335,7 +386,7 @@ export class CollectorRuntime {
   private async collect(run: RemoteRun): Promise<void> {
     const rules = parseCampaignRuleSet(run.rules);
     const state = this.checkpoint!;
-    const device = await this.options.apiClient.getDevice();
+    const device = await this.inOperation('get_device', () => this.options.apiClient.getDevice());
     const started = this.now();
     const previousElapsed = state.progress.elapsedSeconds;
     const delay = () =>
@@ -353,9 +404,13 @@ export class CollectorRuntime {
         if (this.stopped) break;
       }
       // Server state is authoritative; a server resume never starts a local loop.
-      const remote = (await this.options.apiClient.syncRuns()).find((entry) => entry.id === run.id);
+      const remote = (
+        await this.inOperation('sync_runs', () => this.options.apiClient.syncRuns())
+      ).find((entry) => entry.id === run.id);
       if (!remote || remote.status !== 'running') break;
-      const reported = await this.options.apiClient.reportProgress(run.id, state.progress);
+      const reported = await this.inOperation('report_progress', () =>
+        this.options.apiClient.reportProgress(run.id, state.progress),
+      );
       if (reported.status === 'completed') {
         state.message = '已达到停止条件。请到达人库复核本次结果。';
         await this.saveCheckpoint();
@@ -367,37 +422,41 @@ export class CollectorRuntime {
           '推荐页已关闭，采集已安全暂停。请人工检查可见浏览器后再继续。',
         );
       }
-      page = await this.ensureFeedSafetyWithRecovery(page, run.id);
-      await page.bringToFront();
-      const { items: domItems } = await collectVisibleRecommendationFeed(
-        {
-          content: () =>
-            page.locator(DOUYIN_FEED_CARD_SELECTORS.join(',')).evaluateAll((cards) =>
-              cards
-                .filter((card) => {
-                  const rect = card.getBoundingClientRect();
-                  const style = getComputedStyle(card);
-                  return (
-                    rect.width > 0 &&
-                    rect.height > 0 &&
-                    rect.bottom > 0 &&
-                    rect.top < innerHeight &&
-                    rect.right > 0 &&
-                    rect.left < innerWidth &&
-                    style.visibility !== 'hidden' &&
-                    style.display !== 'none'
-                  );
-                })
-                .map((card) => card.outerHTML)
-                .join('\n'),
-            ),
-          mouse: page.mouse,
-          waitForTimeout: (milliseconds) => page.waitForTimeout(milliseconds),
-        },
-        {
-          maxFeedItems: 100,
-          maxScrolls: 0,
-        },
+      page = await this.inOperation('check_safety', () =>
+        this.ensureFeedSafetyWithRecovery(page!, run.id),
+      );
+      await this.inOperation('read_feed', () => page!.bringToFront());
+      const { items: domItems } = await this.inOperation('read_feed', () =>
+        collectVisibleRecommendationFeed(
+          {
+            content: () =>
+              page.locator(DOUYIN_FEED_CARD_SELECTORS.join(',')).evaluateAll((cards) =>
+                cards
+                  .filter((card) => {
+                    const rect = card.getBoundingClientRect();
+                    const style = getComputedStyle(card);
+                    return (
+                      rect.width > 0 &&
+                      rect.height > 0 &&
+                      rect.bottom > 0 &&
+                      rect.top < innerHeight &&
+                      rect.right > 0 &&
+                      rect.left < innerWidth &&
+                      style.visibility !== 'hidden' &&
+                      style.display !== 'none'
+                    );
+                  })
+                  .map((card) => card.outerHTML)
+                  .join('\n'),
+              ),
+            mouse: page.mouse,
+            waitForTimeout: (milliseconds) => page.waitForTimeout(milliseconds),
+          },
+          {
+            maxFeedItems: 100,
+            maxScrolls: 0,
+          },
+        ),
       );
       const availableItems = new Map<string, DouyinFeedItem>();
       for (const entry of this.moduleFeedItems.values()) availableItems.set(entry.postUrl, entry);
@@ -416,8 +475,10 @@ export class CollectorRuntime {
           this.lowConfidencePolicy.mode === 'never_pause'
             ? `连续 ${emptyPasses} 次暂未识别到新的作品与作者；当前设置为永不因此暂停，正在继续滚动和检查。`
             : `暂未识别到新的作品与作者，连续 ${emptyPasses}/${this.lowConfidencePolicy.consecutiveLimit} 次；正在继续尝试。`;
-        const scroll = await this.scrollRecommendationFeed(page, 760);
-        if (!scroll.moved) await page.mouse.wheel(0, 760);
+        const scroll = await this.inOperation('scroll_feed', () =>
+          this.scrollRecommendationFeed(page!, 760),
+        );
+        if (!scroll.moved) await this.inOperation('scroll_feed', () => page!.mouse.wheel(0, 760));
 
         if (this.lowConfidencePolicy.mode === 'never_pause' && emptyPasses >= nextRecoveryPass) {
           state.message = `连续 ${emptyPasses} 次未发现新作品，正在重新加载当前抖音推荐页恢复采集；已有作品不会重复写入。`;
@@ -446,16 +507,17 @@ export class CollectorRuntime {
         1,
         ...rules.hardRules.map((rule) => (rule.type === 'recent-post-likes' ? rule.windowDays : 1)),
       );
-      const inspection = await this.inspectProfileWithRecovery({
-        profileUrl: item.authorProfileUrl!,
-        rollingDays,
-        settleMs: delay(),
-      });
+      const inspection = await this.inOperation('inspect_profile', () =>
+        this.inspectProfileWithRecovery({
+          profileUrl: item.authorProfileUrl!,
+          rollingDays,
+          settleMs: delay(),
+        }),
+      );
       const profilePage = this.profilePage;
       if (!profilePage) throw new Error('作者核验页不可用，请重试。');
-      const safetyIssue = await this.findSafetyIssue(
-        profilePage,
-        inspection.profile.parserConfidence,
+      const safetyIssue = await this.inOperation('check_safety', () =>
+        this.findSafetyIssue(profilePage, inspection.profile.parserConfidence),
       );
       if (safetyIssue?.code === 'low_parser_confidence') {
         const missingFields = [
@@ -493,7 +555,8 @@ export class CollectorRuntime {
         if (!determineRunStopReason(rules, state.progress)) await page.waitForTimeout(delay());
         continue;
       }
-      if (safetyIssue) throw new CollectionPausedError(safetyIssue.humanMessage);
+      if (safetyIssue)
+        throw new CollectionPausedError(safetyIssue.humanMessage, safetyIssue, 'profile');
       if (this.stopped) break;
       state.lowConfidence.consecutiveFailures = updateLowConfidenceConsecutiveFailures(
         state.lowConfidence.consecutiveFailures,
@@ -542,18 +605,22 @@ export class CollectorRuntime {
       state.screenshot =
         filter.outcome !== 'pass'
           ? null
-          : (await profilePage.screenshot({ type: 'jpeg', quality: 75, fullPage: false })).toString(
-              'base64',
-            );
-      state.pendingBatch = collectorBatchSchema.parse({
-        protocolVersion: COLLECTOR_PROTOCOL_VERSION,
-        collectorVersion: COLLECTOR_VERSION,
-        parserVersion: DOUYIN_PARSER_VERSION,
-        deviceId: device.deviceId,
-        runId: run.id,
-        idempotencyKey: `observation-${observationId}`,
-        observations: [observation],
-      });
+          : (
+              await this.inOperation('capture_screenshot', () =>
+                profilePage.screenshot({ type: 'jpeg', quality: 75, fullPage: false }),
+              )
+            ).toString('base64');
+      state.pendingBatch = await this.inOperation('build_batch', async () =>
+        collectorBatchSchema.parse({
+          protocolVersion: COLLECTOR_PROTOCOL_VERSION,
+          collectorVersion: COLLECTOR_VERSION,
+          parserVersion: DOUYIN_PARSER_VERSION,
+          deviceId: device.deviceId,
+          runId: run.id,
+          idempotencyKey: `observation-${observationId}`,
+          observations: [observation],
+        }),
+      );
       state.seenPosts.push(item.platformPostId);
       state.seenCreators.push(item.authorProfileUrl!);
       state.progress.feedItemsSeen += 1;
@@ -586,13 +653,29 @@ export class CollectorRuntime {
     settleMs: number;
   }): Promise<DouyinProfileInspection> {
     try {
-      return await inspectDouyinCreatorProfile(await this.ensureProfilePage(), input);
+      return await this.inspectProfilePage(await this.ensureProfilePage(), input);
     } catch (error) {
       if (!(error instanceof DouyinProfileSafetyError)) throw error;
       if (error.issue.code !== 'transient_page_failure') {
-        throw new CollectionPausedError(error.issue.humanMessage);
+        throw new CollectionPausedError(error.issue.humanMessage, error.issue, 'profile');
       }
       return this.recoverProfileInspection(input, error.issue);
+    }
+  }
+
+  private async inspectProfilePage(
+    page: Page,
+    input: { profileUrl: string; rollingDays: number; settleMs: number },
+  ): Promise<DouyinProfileInspection> {
+    try {
+      return await inspectDouyinCreatorProfile(page, {
+        ...input,
+        onStage: (stage) => {
+          this.profileInspectionStage = { stage, startedAt: this.now() };
+        },
+      });
+    } finally {
+      this.profileInspectionStage = null;
     }
   }
 
@@ -600,7 +683,7 @@ export class CollectorRuntime {
     const initialIssue = await this.findSafetyIssue(page);
     if (!initialIssue) return page;
     if (initialIssue.code !== 'transient_page_failure') {
-      throw new CollectionPausedError(initialIssue.humanMessage);
+      throw new CollectionPausedError(initialIssue.humanMessage, initialIssue, 'feed');
     }
     return this.recoverFeedPage(runId, initialIssue);
   }
@@ -676,7 +759,7 @@ export class CollectorRuntime {
           return recoveredPage;
         }
         if (nextIssue.code !== 'transient_page_failure') {
-          throw new CollectionPausedError(nextIssue.humanMessage);
+          throw new CollectionPausedError(nextIssue.humanMessage, nextIssue, 'feed');
         }
         issue = nextIssue;
       } catch (error) {
@@ -793,7 +876,7 @@ export class CollectorRuntime {
       await this.saveCheckpoint();
       try {
         const profilePage = await this.prepareRecoveryStage(step.stage);
-        const inspection = await inspectDouyinCreatorProfile(profilePage, input);
+        const inspection = await this.inspectProfilePage(profilePage, input);
         const recoveredAt = new Date(this.now()).toISOString();
         state.recovery = {
           ...state.recovery,
@@ -808,7 +891,7 @@ export class CollectorRuntime {
       } catch (error) {
         if (!(error instanceof DouyinProfileSafetyError)) throw error;
         if (error.issue.code !== 'transient_page_failure') {
-          throw new CollectionPausedError(error.issue.humanMessage);
+          throw new CollectionPausedError(error.issue.humanMessage, error.issue, 'profile');
         }
         issue = error.issue;
       }
@@ -985,7 +1068,7 @@ export class CollectorRuntime {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
       const issue = await this.findSafetyIssue(page);
       if (issue?.code === 'transient_page_failure') return false;
-      if (issue) throw new CollectionPausedError(issue.humanMessage);
+      if (issue) throw new CollectionPausedError(issue.humanMessage, issue, 'feed');
       return true;
     } catch (error) {
       if (error instanceof CollectionPausedError) throw error;
@@ -996,9 +1079,11 @@ export class CollectorRuntime {
   private async flushPending(): Promise<void> {
     const state = this.checkpoint!;
     if (!state.pendingBatch) return;
-    await this.queue.enqueue(state.pendingBatch);
+    await this.inOperation('persist_queue', () => this.queue.enqueue(state.pendingBatch));
     while (!this.stopped) {
-      const result = await this.queue.processNext(this.options.apiClient);
+      const result = await this.inOperation('sync_batch', () =>
+        this.queue.processNext(this.options.apiClient),
+      );
       if (result.status === 'completed') {
         if (result.acknowledgement.results.some((entry) => entry.status === 'rejected'))
           throw new CollectionPausedError(
@@ -1016,13 +1101,17 @@ export class CollectorRuntime {
     }
     if (this.stopped) return;
     if (state.screenshot) {
-      await this.options.uploadScreenshot({
-        bytes: Buffer.from(state.screenshot, 'base64'),
-        mimeType: 'image/jpeg',
-        observation: { creatorObservationId: state.pendingBatch.observations[0]!.observationId },
-        purpose: 'profile_screenshot',
-        runId: state.runId,
-      });
+      const screenshot = state.screenshot;
+      const observationId = state.pendingBatch.observations[0]!.observationId;
+      await this.inOperation('upload_evidence', () =>
+        this.options.uploadScreenshot({
+          bytes: Buffer.from(screenshot, 'base64'),
+          mimeType: 'image/jpeg',
+          observation: { creatorObservationId: observationId },
+          purpose: 'profile_screenshot',
+          runId: state.runId,
+        }),
+      );
     }
     state.pendingBatch = null;
     state.screenshot = null;
@@ -1038,13 +1127,14 @@ export class CollectorRuntime {
       url: page.url(),
       title: await page.title(),
       bodyText: await page.locator('body').innerText({ timeout: 5000 }),
+      captchaEvidence: await readCaptchaEvidence(page),
       ...(parserConfidence === undefined ? {} : { parserConfidence }),
     });
   }
 
   private async assertSafe(page: Page, parserConfidence?: number) {
     const issue = await this.findSafetyIssue(page, parserConfidence);
-    if (issue) throw new CollectionPausedError(issue.humanMessage);
+    if (issue) throw new CollectionPausedError(issue.humanMessage, issue, 'feed');
   }
 
   private async loadCheckpoint(
@@ -1116,6 +1206,10 @@ export class CollectorRuntime {
   }
 
   private async saveCheckpoint() {
+    return this.inOperation('save_checkpoint', () => this.persistCheckpoint());
+  }
+
+  private async persistCheckpoint() {
     if (!this.checkpoint) return;
     await mkdir(this.directory, { recursive: true });
     const target = this.checkpointPath(this.checkpoint.runId);
@@ -1153,9 +1247,54 @@ export class CollectorRuntime {
         this.lastErrorCode = 'RecoveryLogWriteError';
       });
   }
+
+  private async inOperation<T>(
+    operation: DiagnosticOperation,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const key = Symbol(operation);
+    this.activeOperations.set(key, { operation, startedAt: this.now() });
+    try {
+      return await action();
+    } catch (error) {
+      if (error && typeof error === 'object' && !this.failureOperations.has(error))
+        this.failureOperations.set(error, operation);
+      throw error;
+    } finally {
+      this.activeOperations.delete(key);
+    }
+  }
+
+  private async recordError(error: unknown, runId: string, fallback: DiagnosticOperation) {
+    const operation =
+      error instanceof CollectionPausedError && error.issue
+        ? fallback
+        : error && typeof error === 'object'
+          ? (this.failureOperations.get(error) ?? fallback)
+          : fallback;
+    const event = createErrorDiagnostic(error, operation, runId, this.now());
+    this.errorDiagnostics = [event, ...this.errorDiagnostics].slice(0, 20);
+    await this.errorLog.append(event).catch(() => {
+      this.diagnosticStorageError = true;
+    });
+    return event;
+  }
 }
 
-class CollectionPausedError extends Error {}
+class CollectionPausedError extends Error {
+  public readonly code?: string;
+  public readonly status?: number;
+  public constructor(
+    message: string,
+    public readonly issue?: CollectionSafetyIssue,
+    public readonly pageType?: 'feed' | 'profile',
+  ) {
+    super(message);
+    this.name = 'CollectionPausedError';
+    if (issue) this.code = issue.evidence ?? issue.code;
+    if (issue?.statusCode !== undefined) this.status = issue.statusCode;
+  }
+}
 class RecoveryCancelledError extends Error {}
 
 function recoveryStageLabel(

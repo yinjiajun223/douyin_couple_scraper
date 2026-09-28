@@ -16,9 +16,23 @@
 - 运行前关闭 Windows 自动睡眠，并保持 `start-collector.cmd` 的 CMD 窗口和可见 Chrome 打开。关闭窗口、电脑休眠、断电或进程退出都不会由后台自动续跑。
 - 单独的“服务异常”“网络错误”“请求异常”或瞬时 5xx 会先保存检查点，再约 15 秒重载当前页、约 60 秒重建页面，必要时约 5 分钟后使用同一持久画像重启可见浏览器。恢复有次数与熔断上限，不会无限刷新。
 - 登录失效、验证码、安全验证、访问频繁、账号异常和无法可靠分类的故障仍立即暂停并等待人工处理。
-- 本机控制页显示故障类别、页面类型、恢复阶段、尝试次数、下次尝试时间和最后结果；恢复期间“暂停”“终止”仍有效。脱敏日志位于共享 `data/diagnostics`，单文件最多 1 MiB、最多 3 个文件，不含 Cookie、令牌、页面正文或完整主页地址。
+- 本机控制页显示故障类别、页面类型、恢复阶段、尝试次数、下次尝试时间和最后结果；恢复期间“暂停”“终止”仍有效。脱敏恢复日志位于共享 `data/diagnostics`，单文件最多 1 MiB、最多 3 个文件，不含 Cookie、令牌、页面正文或完整主页地址。
+
+### v0.1.7 本机错误诊断
+
+控制页标题显示实际运行的助手版本。发生未分类异常时，在页面底部“最近错误诊断”查看时间、运行 ID、出错步骤、错误类型、白名单错误码、HTTP 状态及精简代码位置；可截图交给管理员排查。继续采集或重启助手不会清空历史，页面最多展示最近 20 条。
+
+记录仅写入共享 `data/diagnostics/errors.jsonl`，连同 `.1`、`.2` 最多保留 3 个文件，每个最多 1 MiB，满额后自动轮换最旧记录。它与恢复日志分别限额；不记录原始报错文本、完整堆栈、Cookie、令牌、页面正文或完整网址，也不会上传诊断。若显示“诊断文件读写失败”，部分记录可能仅在本次启动中可见，应检查磁盘空间与目录权限。
+
+这项能力用于查明下一次错误，不能补录旧版本丢失的报错，也不代表此前暂停的根因已修复；未知异常仍安全暂停，需人工检查后继续。
+
+v0.1.8 修复普通作品文字提到“验证码”“安全验证”即误暂停的问题：不再对整页正文、作品标题或 URL 查询参数做验证关键词子串匹配，而是检查验证地址、可见验证弹窗/控件与内容区域外的明确验证提示。隐藏、透明和屏幕外的验证文案不作为当前可见验证；真实验证仍立即暂停，无法读取安全状态也不会当作正常继续。安全暂停会在“最近错误诊断”保留推荐页/作者页及触发依据，继续或重启不清空，不保存页面正文和网址。
 
 源码本地调试请按 `docs/local-development.md` 使用 `npm run dev:local`，不要同时启动分发包。本轮源码改动不代表已有 ZIP 已更新，分发前须重新打包和执行冒烟验证。
+
+### v0.1.9 等待定位
+
+控制页显示当前步骤及等待秒数，作者核验细分打开页面、等待稳定、作品接口正文、读取内容、安全检查和解析。补充作品接口正文最多等待 5 秒，超时后仍做安全检查，仅使用已获得的 DOM/接口证据，缺失字段不按 0 猜测；这个上限不是整个作者核验或所有暂停操作的上限。旧恢复记录标注发生时间，不代表当前正在恢复。若再次长时间不动，请先截图当前步骤与计数，再点一次暂停；持续“正在暂停”时联系管理员，不要反复点击或删除共享数据。
 
 ## 设备被撤销
 
@@ -40,8 +54,10 @@
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.6.zip
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.6.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.9.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.9.zip
+npm run build -w @douyin/collector
+node scripts/test-collector-safety-dom.mjs
 ```
 
 `CaCertificatePath` 只接受公开 CA/服务器证书，构建器会将它作为 `NODE_EXTRA_CA_CERTS` 随包分发，不得打包私钥。使用公开可信 CA 的域名时可以省略此参数。

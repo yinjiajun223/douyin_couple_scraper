@@ -10,6 +10,8 @@ import type { DouyinAuthorProfile, DouyinProfilePostEvidence } from '@douyin/pla
 
 import { detectCollectionSafetyIssue } from './safety-gate.js';
 import type { CollectionSafetyIssue } from './safety-gate.js';
+import { readCaptchaEvidence } from './captcha-evidence.js';
+import type { CaptchaInspectionPage } from './captcha-evidence.js';
 
 export interface ProfileInspectionResponse {
   json(): Promise<unknown>;
@@ -17,14 +19,16 @@ export interface ProfileInspectionResponse {
   url(): string;
 }
 
-export interface ProfileInspectionPage {
+export interface ProfileInspectionPage extends CaptchaInspectionPage {
   bringToFront(): Promise<void>;
   content(): Promise<string>;
   goto(
     url: string,
     options: { timeout: number; waitUntil: 'domcontentloaded' },
   ): Promise<{ status(): number } | null | unknown>;
-  locator(selector: string): { innerText(options: { timeout: number }): Promise<string> };
+  locator(selector: string): ReturnType<CaptchaInspectionPage['locator']> & {
+    innerText(options: { timeout: number }): Promise<string>;
+  };
   off(event: 'response', listener: (response: ProfileInspectionResponse) => void): void;
   on(event: 'response', listener: (response: ProfileInspectionResponse) => void): void;
   title(): Promise<string>;
@@ -37,6 +41,9 @@ export interface DouyinProfileInspection {
   posts: DouyinProfilePostEvidence[];
   profile: DouyinAuthorProfile;
 }
+
+export type ProfileInspectionStage =
+  'navigate' | 'settle' | 'responses' | 'content' | 'safety' | 'parse';
 
 export class DouyinProfileIdentityMismatchError extends Error {
   public constructor() {
@@ -54,17 +61,26 @@ export class DouyinProfileSafetyError extends Error {
 
 export async function inspectDouyinCreatorProfile(
   page: ProfileInspectionPage,
-  input: { profileUrl: string; rollingDays: number; observedAt?: Date; settleMs?: number },
+  input: {
+    profileUrl: string;
+    rollingDays: number;
+    observedAt?: Date;
+    settleMs?: number;
+    onStage?: (stage: ProfileInspectionStage) => void;
+  },
 ): Promise<DouyinProfileInspection> {
   const requestedProfileUrl = normalizeDouyinProfileUrl(input.profileUrl);
   const observedAt = input.observedAt ?? new Date();
   const apiPosts = new Map<string, DouyinProfilePostEvidence>();
   const pendingResponses = new Set<Promise<void>>();
+  let acceptingResponses = true;
   const responseListener = (response: ProfileInspectionResponse) => {
-    if (!isTrustedDouyinProfilePostsResponse(response)) return;
-    const task = captureProfilePostsResponse(response, apiPosts).finally(() => {
-      pendingResponses.delete(task);
-    });
+    if (!acceptingResponses || !isTrustedDouyinProfilePostsResponse(response)) return;
+    const task = captureProfilePostsResponse(response, apiPosts, () => acceptingResponses).finally(
+      () => {
+        pendingResponses.delete(task);
+      },
+    );
     pendingResponses.add(task);
   };
   page.on('response', responseListener);
@@ -72,6 +88,7 @@ export async function inspectDouyinCreatorProfile(
   try {
     let navigationResponse: { status(): number } | null = null;
     try {
+      input.onStage?.('navigate');
       const response = await page.goto(requestedProfileUrl, {
         timeout: 90_000,
         waitUntil: 'domcontentloaded',
@@ -90,13 +107,19 @@ export async function inspectDouyinCreatorProfile(
         navigationErrorCode: 'UNCLASSIFIED_NAVIGATION_ERROR',
       });
     }
+    input.onStage?.('settle');
     await page.bringToFront();
     await page.waitForTimeout(Math.max(1_500, input.settleMs ?? 2_200));
-    await Promise.allSettled([...pendingResponses]);
+    input.onStage?.('responses');
+    await waitForProfileResponses([...pendingResponses]);
+    acceptingResponses = false;
+    input.onStage?.('content');
     const html = await page.content();
     const statusCode = navigationResponse?.status();
+    input.onStage?.('safety');
     const issue = detectCollectionSafetyIssue({
       bodyText: await page.locator('body').innerText({ timeout: 5_000 }),
+      captchaEvidence: await readCaptchaEvidence(page),
       ...(statusCode === undefined ? {} : { statusCode }),
       title: await page.title(),
       url: safePageUrl(page),
@@ -106,6 +129,7 @@ export async function inspectDouyinCreatorProfile(
       throw new DouyinProfileIdentityMismatchError();
     }
 
+    input.onStage?.('parse');
     const profile = extractDouyinAuthorProfileFromHtml(html, requestedProfileUrl);
     if (profile.profileUrl !== requestedProfileUrl || !profile.platformCreatorId) {
       throw new DouyinProfileIdentityMismatchError();
@@ -119,7 +143,24 @@ export async function inspectDouyinCreatorProfile(
     );
     return { observedAt: observedAt.toISOString(), posts, profile };
   } finally {
+    acceptingResponses = false;
     page.off('response', responseListener);
+  }
+}
+
+async function waitForProfileResponses(responses: Promise<void>[]): Promise<void> {
+  if (!responses.length) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Optional API evidence must never block safety checks or manual pause indefinitely.
+    await Promise.race([
+      Promise.allSettled(responses),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 5_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -163,9 +204,11 @@ function isTrustedDouyinProfilePostsResponse(response: ProfileInspectionResponse
 async function captureProfilePostsResponse(
   response: ProfileInspectionResponse,
   posts: Map<string, DouyinProfilePostEvidence>,
+  accepting: () => boolean,
 ): Promise<void> {
   try {
     const payload = await response.json();
+    if (!accepting()) return;
     for (const post of extractDouyinProfilePostsFromApi(payload)) {
       posts.set(post.platformPostId, post);
     }

@@ -24,6 +24,91 @@ const profilePostsApiFixture = JSON.parse(
 ) as unknown;
 
 describe('潜在命中作者主页核验', () => {
+  it.each([false, true])(
+    '作品响应正文不结束时最多等待 5 秒，仍检查安全状态（有验证：%s）',
+    async (captcha) => {
+      vi.useFakeTimers();
+      try {
+        let listener:
+          | ((response: { json(): Promise<unknown>; status(): number; url(): string }) => void)
+          | undefined;
+        const response = {
+          json: () => new Promise<unknown>(() => {}),
+          status: () => 200,
+          url: () => 'https://www.douyin.com/aweme/v1/web/aweme/post/',
+        };
+        const page = {
+          bringToFront: vi.fn(),
+          content: vi.fn().mockResolvedValue(profileFixture),
+          goto: vi.fn(async () => {
+            listener?.(response);
+            return { status: () => 200 };
+          }),
+          locator: vi.fn().mockReturnValue({
+            innerText: vi.fn().mockResolvedValue('边界作者 粉丝 4999'),
+            evaluate: vi.fn().mockResolvedValue(captcha ? 'CAPTCHA_VISIBLE_DIALOG' : null),
+          }),
+          on: vi.fn((_event: string, callback: typeof listener) => {
+            listener = callback;
+          }),
+          off: vi.fn(),
+          title: vi.fn().mockResolvedValue('作者主页'),
+          url: () => 'https://www.douyin.com/user/boundary-author',
+          waitForTimeout: vi.fn(),
+        };
+        let settled = false;
+        const result = inspectDouyinCreatorProfile(page, {
+          profileUrl: page.url(),
+          rollingDays: 15,
+        }).then(
+          (value) => {
+            settled = true;
+            return { value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          },
+        );
+        await vi.advanceTimersByTimeAsync(5_001);
+        expect(settled).toBe(true);
+        await expect(result).resolves.toMatchObject(
+          captcha
+            ? { error: { issue: { code: 'captcha_required' } } }
+            : { value: { profile: { followerCount: 4_999 } } },
+        );
+        expect(page.locator().evaluate).toHaveBeenCalled();
+        expect(page.off).toHaveBeenCalledWith('response', expect.any(Function));
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('普通作品文案提到验证码时仍可核验作者，不误判为验证弹窗', async () => {
+    const profileUrl = 'https://www.douyin.com/user/boundary-author';
+    const page = {
+      bringToFront: vi.fn(),
+      content: vi.fn().mockResolvedValue(profileFixture),
+      goto: vi.fn().mockResolvedValue({ status: () => 200 }),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi
+          .fn()
+          .mockResolvedValue('边界作者 粉丝 4999 作品 反诈科普：不要把验证码告诉陌生人'),
+        evaluate: vi.fn().mockResolvedValue(null),
+      }),
+      off: vi.fn(),
+      on: vi.fn(),
+      title: vi.fn().mockResolvedValue('边界作者的抖音主页'),
+      url: vi.fn().mockReturnValue(profileUrl),
+      waitForTimeout: vi.fn(),
+    };
+    await expect(
+      inspectDouyinCreatorProfile(page, { profileUrl, rollingDays: 15 }),
+    ).resolves.toMatchObject({ profile: { followerCount: 4_999 } });
+  });
+
   it('正常主页的隐藏验证脚本不应误报为需要人工验证码', async () => {
     const profileUrl = 'https://www.douyin.com/user/boundary-author';
     const page = {
@@ -39,6 +124,7 @@ describe('潜在命中作者主页核验', () => {
       goto: vi.fn().mockResolvedValue({ status: () => 200 }),
       locator: vi.fn().mockReturnValue({
         innerText: vi.fn().mockResolvedValue('边界作者 粉丝 4,999 作品'),
+        evaluate: vi.fn().mockResolvedValue(null),
       }),
       off: vi.fn(),
       on: vi.fn(),
@@ -60,6 +146,7 @@ describe('潜在命中作者主页核验', () => {
       goto: vi.fn(),
       locator: vi.fn().mockReturnValue({
         innerText: vi.fn().mockResolvedValue('边界作者 粉丝 4,999 作品'),
+        evaluate: vi.fn().mockResolvedValue(null),
       }),
       off: vi.fn(),
       on: vi.fn(),
@@ -122,6 +209,7 @@ describe('潜在命中作者主页核验', () => {
       }),
       locator: vi.fn().mockReturnValue({
         innerText: vi.fn().mockResolvedValue('Cora 粉丝 3305 作品'),
+        evaluate: vi.fn().mockResolvedValue(null),
       }),
       off: vi.fn(),
       on: vi.fn((_event: 'response', listener: ResponseListener) => {
@@ -172,7 +260,10 @@ describe('潜在命中作者主页核验', () => {
       bringToFront: vi.fn(),
       content: vi.fn().mockResolvedValue(`<html><body>${sensitiveBody}</body></html>`),
       goto: vi.fn().mockResolvedValue({ status: () => 503 }),
-      locator: vi.fn().mockReturnValue({ innerText: vi.fn().mockResolvedValue(sensitiveBody) }),
+      locator: vi.fn().mockReturnValue({
+        innerText: vi.fn().mockResolvedValue(sensitiveBody),
+        evaluate: vi.fn().mockResolvedValue(null),
+      }),
       off: vi.fn(),
       on: vi.fn(),
       title: vi.fn().mockResolvedValue('私密标题标记'),
@@ -230,6 +321,7 @@ describe('潜在命中作者主页核验', () => {
       goto: vi.fn().mockResolvedValue({ status: () => 200 }),
       locator: vi.fn().mockReturnValue({
         innerText: vi.fn().mockResolvedValue('请完成安全验证'),
+        evaluate: vi.fn().mockResolvedValue('CAPTCHA_DOCUMENT_PROMPT'),
       }),
       off: vi.fn(),
       on: vi.fn(),

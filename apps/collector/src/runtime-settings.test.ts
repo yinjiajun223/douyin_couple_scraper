@@ -151,7 +151,10 @@ describe('本地采集运行设置', () => {
       isClosed: () => false,
       locator: (selector: string) =>
         selector === 'body'
-          ? { innerText: async () => '抖音推荐流正常页面' }
+          ? {
+              innerText: async () => '抖音推荐流正常页面',
+              evaluate: vi.fn().mockResolvedValue(null),
+            }
           : { evaluateAll: async () => feedHtml },
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
       reload: vi.fn().mockResolvedValue(undefined),
@@ -174,6 +177,7 @@ describe('本地采集运行设置', () => {
       }),
       isClosed: () => false,
       locator: () => ({
+        evaluate: vi.fn().mockResolvedValue(null),
         innerText: async () =>
           profileNavigationCount === 1
             ? '服务异常，重新刷新获取数据'
@@ -327,7 +331,10 @@ describe('本地采集运行设置', () => {
       isClosed: () => false,
       locator: (selector: string) =>
         selector === 'body'
-          ? { innerText: async () => '抖音推荐流正常页面' }
+          ? {
+              innerText: async () => '抖音推荐流正常页面',
+              evaluate: vi.fn().mockResolvedValue(null),
+            }
           : { evaluateAll: async () => feedHtml },
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
       title: async () => '抖音精选',
@@ -342,7 +349,10 @@ describe('本地采集运行设置', () => {
         profileUrl = url;
       }),
       isClosed: vi.fn().mockReturnValue(false),
-      locator: () => ({ innerText: async () => '公开主页内容尚未完整加载' }),
+      locator: () => ({
+        innerText: async () => '公开主页内容尚未完整加载',
+        evaluate: vi.fn().mockResolvedValue(null),
+      }),
       off: vi.fn(),
       on: vi.fn(),
       screenshot: vi.fn(),
@@ -458,7 +468,10 @@ describe('本地采集运行设置', () => {
       isClosed: () => false,
       locator: (selector: string) =>
         selector === 'body'
-          ? { innerText: async () => '抖音推荐流正常页面' }
+          ? {
+              innerText: async () => '抖音推荐流正常页面',
+              evaluate: vi.fn().mockResolvedValue(null),
+            }
           : { evaluateAll: async () => '' },
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
       reload: vi.fn().mockResolvedValue(undefined),
@@ -601,7 +614,10 @@ describe('本地采集运行设置', () => {
       isClosed: () => false,
       locator: (selector: string) =>
         selector === 'body'
-          ? { innerText: async () => '抖音推荐流正常页面' }
+          ? {
+              innerText: async () => '抖音推荐流正常页面',
+              evaluate: vi.fn().mockResolvedValue(null),
+            }
           : { evaluateAll: async () => feedHtml },
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
       reload: vi.fn().mockResolvedValue(undefined),
@@ -620,7 +636,10 @@ describe('本地采集运行设置', () => {
         currentProfileHtml = profileHtmlBySlug.get(url.split('/').at(-1) ?? '') ?? '';
       }),
       isClosed: () => false,
-      locator: () => ({ innerText: async () => '公开主页内容完整' }),
+      locator: () => ({
+        innerText: async () => '公开主页内容完整',
+        evaluate: vi.fn().mockResolvedValue(null),
+      }),
       off: vi.fn(),
       on: vi.fn(),
       screenshot: vi.fn().mockResolvedValue(Buffer.from('只有通过的达人才需要证据')),

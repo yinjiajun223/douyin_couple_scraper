@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -19,7 +19,7 @@ afterEach(async () => {
   );
 });
 
-type ProfileOutcome = 'transient' | 'trusted';
+type ProfileOutcome = 'transient' | 'trusted' | 'captcha';
 
 function createFeedPage(options?: { transientAfterFirstSafetyCheck?: boolean }) {
   const html = `<article>
@@ -41,6 +41,7 @@ function createFeedPage(options?: { transientAfterFirstSafetyCheck?: boolean }) 
     locator: (selector: string) =>
       selector === 'body'
         ? {
+            evaluate: vi.fn().mockResolvedValue(null),
             innerText: async () => {
               bodyReads += 1;
               return options?.transientAfterFirstSafetyCheck && bodyReads > 1 && !recovered
@@ -94,8 +95,15 @@ function createProfilePage(outcomes: ProfileOutcome[], onTrusted?: () => void) {
     }),
     isClosed: () => closed,
     locator: () => ({
+      evaluate: vi
+        .fn()
+        .mockImplementation(async () => (current === 'captcha' ? 'CAPTCHA_VISIBLE_DIALOG' : null)),
       innerText: async () =>
-        current === 'transient' ? '服务异常，重新刷新获取数据' : '恢复测试作者 粉丝 1200 公开作品',
+        current === 'transient'
+          ? '服务异常，重新刷新获取数据'
+          : current === 'captcha'
+            ? '请完成安全验证'
+            : '恢复测试作者 粉丝 1200 公开作品',
     }),
     off: vi.fn(),
     on: vi.fn(),
@@ -172,7 +180,7 @@ async function createRecoveryRuntime(
   let progressReports = 0;
   const rules = options?.rules ?? createDefaultCampaignRuleSet();
   const changeRunStatus = vi.fn().mockImplementation(async (_id: string, action: string) => {
-    remoteStatus = action === 'resume' ? 'running' : action;
+    remoteStatus = action === 'resume' ? 'running' : action === 'pause' ? 'paused' : 'terminated';
     return { id: runId, status: remoteStatus };
   });
   const sendBatch = vi.fn().mockImplementation(async (batch: CollectorBatch) => {
@@ -244,6 +252,199 @@ async function createRecoveryRuntime(
 }
 
 describe('长运行暂时性故障恢复', () => {
+  it('作品响应正文悬挂时显示等待步骤，人工暂停在正文等待上限后完成且不写入数据', async () => {
+    const page = createProfilePage(['trusted']);
+    let listener:
+      | ((response: { json(): Promise<unknown>; status(): number; url(): string }) => void)
+      | undefined;
+    page.on.mockImplementation((_event, callback) => {
+      listener = callback;
+    });
+    page.goto.mockImplementation(async () => {
+      listener?.({
+        json: () => new Promise<unknown>(() => {}),
+        status: () => 200,
+        url: () => 'https://www.douyin.com/aweme/v1/web/aweme/post/',
+      });
+      return { status: () => 200 };
+    });
+    const harness = await createRecoveryRuntime([createContext([page])]);
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({
+        currentOperation: { operation: 'inspect_profile', stage: 'responses' },
+      }),
+    );
+    const pause = harness.runtime.control(harness.runId, 'pause');
+    await expect(harness.runtime.status()).resolves.toMatchObject({ stopping: true });
+    await pause;
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      activeRunId: null,
+      busy: false,
+      stopping: false,
+      currentOperation: null,
+    });
+    expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause');
+    expect(harness.sendBatch).not.toHaveBeenCalled();
+    expect(page.screenshot).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it('读取验证控件失败时不能当作无验证继续采集', async () => {
+    const feed = createFeedPage();
+    const originalLocator = feed.locator;
+    feed.locator = (selector: string) =>
+      selector === 'body'
+        ? {
+            innerText: async () => '抖音推荐流正常页面' as const,
+            evaluate: vi.fn().mockRejectedValue(new Error('DOM unavailable')),
+          }
+        : originalLocator(selector);
+    const harness = await createRecoveryRuntime([createContext([], feed)]);
+    await expect(harness.runtime.start(harness.runId)).rejects.toThrow('DOM unavailable');
+    expect(harness.apiClient.startRun).not.toHaveBeenCalled();
+  });
+
+  it('作者页真实验证立即暂停，触发依据继续和重启后仍保留', async () => {
+    const harness = await createRecoveryRuntime([
+      createContext([createProfilePage(['captcha', 'trusted'])]),
+    ]);
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause');
+    expect(harness.sendBatch).not.toHaveBeenCalled();
+    const expected = {
+      operation: 'check_profile_safety',
+      code: 'CAPTCHA_VISIBLE_DIALOG',
+      errorType: 'CollectionPausedError',
+    };
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+    const restored = new CollectorRuntime({
+      apiClient: harness.apiClient,
+      profileStore: { dataRoot: harness.dataRoot } as never,
+      uploadScreenshot: harness.uploadScreenshot,
+    });
+    await restored.restore();
+    await expect(restored.status()).resolves.toMatchObject({
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+  });
+
+  it('推荐页验证在开始前阻止采集并记录正确页面类型', async () => {
+    const feed = createFeedPage();
+    const originalLocator = feed.locator;
+    feed.locator = (selector: string) =>
+      selector === 'body'
+        ? {
+            innerText: async () => '抖音推荐流正常页面' as const,
+            evaluate: vi.fn().mockResolvedValue('CAPTCHA_VISIBLE_WIDGET'),
+          }
+        : originalLocator(selector);
+    const harness = await createRecoveryRuntime([createContext([], feed)]);
+    await expect(harness.runtime.start(harness.runId)).rejects.toThrow('安全验证');
+    expect(harness.apiClient.startRun).not.toHaveBeenCalled();
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      errorDiagnostics: [
+        expect.objectContaining({ operation: 'check_feed_safety', code: 'CAPTCHA_VISIBLE_WIDGET' }),
+      ],
+    });
+  });
+
+  it('诊断写盘失败仍安全暂停并保留本次启动的记录', async () => {
+    const harness = await createRecoveryRuntime([createContext([createProfilePage(['trusted'])])]);
+    await writeFile(path.join(harness.dataRoot, 'diagnostics'), 'occupied', 'utf8');
+    harness.apiClient.reportProgress.mockRejectedValueOnce(new Error('private-marker'));
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause');
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      diagnosticStorageError: true,
+      errorDiagnostics: [
+        expect.objectContaining({ operation: 'report_progress', code: 'UNCLASSIFIED' }),
+      ],
+    });
+  });
+
+  it('截图异常记录实际步骤，不误标为核验或上报失败', async () => {
+    const page = createProfilePage(['trusted']);
+    page.screenshot.mockRejectedValueOnce(
+      Object.assign(new Error('page.screenshot: Target page, context or browser has been closed'), {
+        name: 'Error',
+      }),
+    );
+    const harness = await createRecoveryRuntime([createContext([page])]);
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      errorDiagnostics: [
+        expect.objectContaining({ operation: 'capture_screenshot', code: 'BROWSER_CLOSED' }),
+      ],
+    });
+  });
+
+  it('未知异常暂停后留下脱敏诊断，继续与重启后仍可查看', async () => {
+    const harness = await createRecoveryRuntime([createContext([createProfilePage(['trusted'])])]);
+    harness.apiClient.reportProgress.mockRejectedValueOnce(
+      new TypeError(
+        'fetch failed Authorization: Bearer secret-marker https://private.invalid/user',
+        {
+          cause: Object.assign(new Error('Cookie secret-marker'), { code: 'ECONNRESET' }),
+        },
+      ),
+    );
+
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause');
+    const expected = {
+      runId: harness.runId,
+      operation: 'report_progress',
+      errorType: 'TypeError',
+      code: 'ECONNRESET',
+    };
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      lastErrorCode: null,
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+    const restored = new CollectorRuntime({
+      apiClient: harness.apiClient,
+      profileStore: { dataRoot: harness.dataRoot } as never,
+      uploadScreenshot: harness.uploadScreenshot,
+    });
+    await restored.restore();
+    await expect(restored.status()).resolves.toMatchObject({
+      errorDiagnostics: [expect.objectContaining(expected)],
+    });
+    const log = await readFile(path.join(harness.dataRoot, 'diagnostics', 'errors.jsonl'), 'utf8');
+    for (const sensitive of ['secret-marker', 'Authorization', 'Cookie', 'private.invalid']) {
+      expect(log).not.toContain(sensitive);
+      expect(JSON.stringify(await restored.status())).not.toContain(sensitive);
+    }
+  });
+
   it('假时钟加速 24 小时运行时可跨多次暂时故障且资源有界', async () => {
     let now = Date.parse('2026-09-23T00:00:00.000Z');
     const feedPage = createFeedPage();
@@ -253,6 +454,7 @@ describe('长运行暂时性故障恢复', () => {
     feedPage.locator = vi.fn((selector: string) => {
       if (selector !== 'body') return originalLocator(selector);
       return {
+        evaluate: vi.fn().mockResolvedValue(null),
         innerText: async () => {
           safetyChecks += 1;
           return transientChecks.has(safetyChecks)

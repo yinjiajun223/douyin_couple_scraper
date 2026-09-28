@@ -20,6 +20,12 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 
 单独的服务异常、网络错误、请求异常或瞬时 5xx 会保存检查点，并按“重载当前页 → 重建页面 → 使用同一画像重启可见浏览器”的有界阶梯恢复。本机控制页显示类别、阶段、次数、下次尝试和结果；登录失效、验证码、访问频繁、账号异常及恢复预算耗尽仍安全暂停。脱敏恢复日志位于共享 `data/diagnostics`，最多 3 个 1 MiB 文件，不包含 Cookie、令牌、页面正文或完整主页地址。
 
+v0.1.7 的共享控制页新增“最近错误诊断”，保留出错步骤、时间、错误类型与白名单代码，继续或重启后仍可查看最近 20 条。错误日志 `data/diagnostics/errors.jsonl` 及 `.1`、`.2` 与恢复日志分别限额，各最多 3 个 1 MiB 文件；不记录原始消息、完整堆栈或敏感信息。旧版报错不能补录；读写失败会在控制页明确提示。源码能力不代表 macOS 包已完成发布，仍须按下文在两个架构分别构建和验证。
+
+共享源码 v0.1.8 修复普通作品文字触发验证码暂停的误判，按验证地址、可见验证控件/弹窗和明确提示判定。安全暂停也保留页面类型及触发依据，真实验证仍由人工处理。此说明不表示 macOS v0.1.8 包已构建或验收。
+
+共享源码 v0.1.9 对补充作品接口正文设置 5 秒等待上限，增加当前步骤、作者核验子步骤与等待时长；历史恢复记录注明发生时间。此上限不涵盖所有浏览器操作，真实验证仍暂停。macOS v0.1.9 未构建和完成双架构真机验收。
+
 ## 设备被撤销
 
 管理员在网页端撤销设备（或停用你的账号）后，本机会立即失去同步与领取运行的权限，控制页显示授权失败。已撤销的设备在网页端默认隐藏、也无法删除，只作为只读历史保留；要继续使用只能在本机用新的配对码重新配对，钥匙串里的旧令牌不会恢复。撤销不影响已经入库的候选与证据。
@@ -47,7 +53,7 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 cd /path/to/douyin_couple_scraper
 npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/build-collector-macos.sh \
-  --version 0.1.6 \
+  --version 0.1.9 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
@@ -64,7 +70,7 @@ bash scripts/build-collector-macos.sh \
 ```bash
 cd /path/to/douyin_couple_scraper
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.6.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.9.tar.gz'
 ```
 
 验证内容包括：包内 Node 可执行、Keychain 设备令牌往返、独立画像创建、可见 Chrome 启动和本地控制页。测试使用临时数据目录，结束时删除对应的测试钥匙串项目。若测试机暂时没有 Chrome，可以加 `--skip-visible-chrome` 做不完整检查，但该结果不能作为正式发布验收。

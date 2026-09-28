@@ -27,13 +27,13 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
     .safety-config { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: end; padding: 16px; margin: 14px 0 18px; border: 1px solid #d7dce5; background: #f8fafc; border-radius: 8px; }
     .safety-config h3 { margin: 0 0 5px; font-size: 15px; } .safety-config p { margin: 0; font-size: 13px; color: #566077; }
     .safety-fields { display: flex; gap: 10px; align-items: end; } .safety-fields label { min-width: 190px; } .safety-fields .limit { min-width: 150px; }
-    .diagnostic { color: #704a0a; background: #fff7e7; }
+    .diagnostic { color: #704a0a; background: #fff7e7; } .error-entry { overflow-wrap: anywhere; }
     @media(max-width:700px) { main { padding: 20px 14px; } .grid, .safety-config { grid-template-columns: 1fr; } section { padding: 18px; } header { align-items: start; } h1 { font-size: 24px; } .counts { gap: 12px; flex-wrap: wrap; } .row label { width: 100%; } .safety-fields { align-items: stretch; flex-direction: column; } }
   </style>
 </head>
 <body>
 <main>
-  <header><div><span class="eyebrow">星探台 / 本机采集</span><h1>抖音采集助手</h1><small>网页管理任务，这里控制你电脑上的抖音浏览器。</small></div><span class="badge" id="connection">正在连接…</span></header>
+  <header><div><span class="eyebrow">星探台 / 本机采集</span><h1>抖音采集助手 <small id="collector-version"></small></h1><small>网页管理任务，这里控制你电脑上的抖音浏览器。</small></div><span class="badge" id="connection">正在连接…</span></header>
   <p id="message" role="status" aria-live="polite"></p>
   <div class="grid">
     <section aria-labelledby="pair-heading">
@@ -63,7 +63,13 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
         <button type="submit" class="secondary">保存策略</button>
       </div>
     </form>
-    <p id="runtime-message"></p><div id="runs" aria-live="polite"><p class="empty">正在同步任务…</p></div>
+    <p id="runtime-message"></p><p id="current-operation" class="run-note" hidden></p><div id="runs" aria-live="polite"><p class="empty">正在同步任务…</p></div>
+  </section>
+  <section class="runs-section" aria-labelledby="errors-heading">
+    <h2 id="errors-heading">最近错误诊断</h2>
+    <p class="muted">仅保存在本机，展示最近 20 条；继续采集或重启助手后仍可查看，超出保留上限会轮换。不包含 Cookie、令牌、页面正文或完整网址。出现新错误时，可截图此处用于排查。</p>
+    <p id="diagnostic-storage-warning" class="run-note diagnostic" role="status" hidden>诊断文件读写失败，部分记录可能仅在本次启动中可见。请检查磁盘空间与数据目录权限。</p>
+    <div id="error-diagnostics"><p class="empty">暂无错误诊断。旧版本发生的错误无法补录。</p></div>
   </section>
 </main>
 <script>
@@ -74,9 +80,10 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
   const lowConfidenceMode = document.querySelector('#low-confidence-mode');
   const lowConfidenceLimit = document.querySelector('#low-confidence-limit');
   const lowConfidenceLimitLabel = document.querySelector('#low-confidence-limit-label');
-  let actionBusy = false, refreshing = false, settingsDirty = false, lastRuns = '', lastProfiles = '', lastConnectionError = '';
+  let actionBusy = false, refreshing = false, settingsDirty = false, lastRuns = '', lastProfiles = '', lastConnectionError = '', lastDiagnostics = '';
   let state = { profiles: [], runs: [], runtime: {} };
   const labels = { ready:'等待人工开始', claimed:'已领取，待开始', running:'采集中', paused:'已暂停', completed:'已完成', failed:'失败', terminated:'已终止' };
+  const operationLabels = { start:'启动运行', collect:'采集流程', open_browser:'打开浏览器', read_feed:'读取推荐页', inspect_profile:'核验作者', check_safety:'检查页面状态', capture_screenshot:'截取证据', build_batch:'校验观察数据', persist_queue:'保存待同步数据', sync_batch:'同步观察数据', upload_evidence:'上传截图', sync_runs:'同步任务', get_device:'检查设备授权', report_progress:'上报进度', save_checkpoint:'保存本机进度', scroll_feed:'推荐页翻页' };
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   async function request(path, options = {}) {
     const response = await fetch('/control/api' + path, { headers: { 'content-type': 'application/json' }, ...options });
@@ -87,6 +94,20 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
   function render(next) {
     state = next;
     const runtime = state.runtime || {};
+    const currentOperation = runtime.currentOperation;
+    const stageLabels = { navigate:'打开作者页', settle:'等待页面稳定', responses:'等待作品接口正文（最多 5 秒）', content:'读取作者页内容', safety:'核对作者页安全状态', parse:'解析作者数据' };
+    document.querySelector('#current-operation').hidden = !currentOperation;
+    document.querySelector('#current-operation').textContent = currentOperation ? (runtime.stopping ? '正在暂停，等待当前步骤结束：' : '当前步骤：') + (stageLabels[currentOperation.stage] || operationLabels[currentOperation.operation] || '采集流程') + ' · 已等待 ' + Math.max(0, Number(currentOperation.elapsedSeconds) || 0) + ' 秒' : '';
+    document.querySelector('#collector-version').textContent = runtime.collectorVersion ? 'v' + runtime.collectorVersion : '';
+    document.querySelector('#diagnostic-storage-warning').hidden = !runtime.diagnosticStorageError;
+    const diagnostics = (runtime.errorDiagnostics || []).slice(0, 20);
+    const diagnosticKey = JSON.stringify(diagnostics);
+    if (diagnosticKey !== lastDiagnostics) {
+      lastDiagnostics = diagnosticKey;
+      const operations = { start:'启动运行', collect:'采集流程', open_browser:'打开浏览器', read_feed:'读取推荐页', inspect_profile:'核验作者', check_safety:'检查页面状态', check_feed_safety:'推荐页安全检查', check_profile_safety:'作者页安全检查', capture_screenshot:'截取证据', build_batch:'校验观察数据', persist_queue:'保存待同步数据', sync_batch:'同步观察数据', upload_evidence:'上传截图', sync_runs:'同步任务', get_device:'检查设备授权', report_progress:'上报进度', save_checkpoint:'保存本机进度', scroll_feed:'推荐页翻页' };
+      const evidenceLabels = { CAPTCHA_VERIFICATION_URL:'验证页面地址', CAPTCHA_VISIBLE_DIALOG:'可见验证弹窗', CAPTCHA_VISIBLE_WIDGET:'可见验证控件或框架', CAPTCHA_DOCUMENT_PROMPT:'页面明确验证提示', login_required:'登录失效提示', platform_restriction:'平台限制信号', captcha_required:'安全验证信号' };
+      document.querySelector('#error-diagnostics').innerHTML = diagnostics.length ? diagnostics.map((entry) => '<article class="run error-entry"><div class="run-head"><strong>' + escapeHtml(operations[entry.operation] || '采集流程') + '</strong><small>' + escapeHtml(new Date(entry.at).toLocaleString('zh-CN')) + '</small></div><p>' + escapeHtml(entry.errorType === 'CollectionPausedError' ? '安全暂停' : entry.errorType) + ' · ' + escapeHtml(entry.code) + (entry.statusCode ? ' · HTTP ' + escapeHtml(entry.statusCode) : '') + '</p>' + (evidenceLabels[entry.code] ? '<p>触发依据：' + escapeHtml(evidenceLabels[entry.code]) + '</p>' : '') + '<small>运行：' + escapeHtml(entry.runId || '未关联') + ' · 助手 v' + escapeHtml(entry.collectorVersion) + (entry.origin ? ' · 位置：' + escapeHtml(entry.origin) : '') + '<br>诊断编号：' + escapeHtml(entry.id) + '</small></article>').join('') : '<p class="empty">暂无错误诊断。旧版本发生的错误无法补录。</p>';
+    }
     document.querySelector('#connection').textContent = state.connectionError ? '连接需处理' : state.paired === false ? '未配对' : '已连接团队';
     document.querySelector('#pair-hint').textContent = state.deviceName ? '已授权：' + state.deviceName + '。无需重复配对。' : '在工作台「采集设备」生成配对码，填在这里。';
     document.querySelector('#pair-form').hidden = Boolean(state.paired);
@@ -123,7 +144,8 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
         const recoveryStages = { idle:'空闲', reload_page:'重新加载当前页', recreate_profile_page:'重建页面', restart_browser:'同画像重启浏览器', circuit_open:'恢复熔断' };
         const recoveryResults = { waiting:'等待重试', attempting:'正在尝试', recovered:'已恢复', exhausted:'恢复预算耗尽', cancelled:'已取消', idle:'空闲' };
         const nextAttempt = recovery.nextAttemptAt ? '；下次尝试：' + escapeHtml(new Date(recovery.nextAttemptAt).toLocaleString('zh-CN')) : '';
-        const recoveryNote = recovery.issueCode ? '<p class="run-note diagnostic">恢复诊断：' + escapeHtml(recoveryIssues[recovery.issueCode] || '未知安全事件') + ' · ' + escapeHtml(recovery.pageType === 'feed' ? '推荐页' : '作者页') + ' · ' + escapeHtml(recoveryStages[recovery.stage] || '未知阶段') + ' · 第 ' + Number(recovery.attemptCount || 0) + ' 次 · ' + escapeHtml(recoveryResults[recovery.lastResult] || '未知结果') + nextAttempt + '</p>' : '';
+        const recoveryTime = recovery.eventStartedAt ? ' · 发生于 ' + escapeHtml(new Date(recovery.eventStartedAt).toLocaleString('zh-CN')) : '';
+        const recoveryNote = recovery.issueCode ? '<p class="run-note diagnostic">最近一次恢复记录（不代表当前步骤）：' + escapeHtml(recoveryIssues[recovery.issueCode] || '未知安全事件') + ' · ' + escapeHtml(recovery.pageType === 'feed' ? '推荐页' : '作者页') + ' · ' + escapeHtml(recoveryStages[recovery.stage] || '未知阶段') + ' · 第 ' + Number(recovery.attemptCount || 0) + ' 次 · ' + escapeHtml(recoveryResults[recovery.lastResult] || '未知结果') + recoveryTime + nextAttempt + '</p>' : '';
         return '<article class="run" data-run-id="' + escapeHtml(run.id) + '"><div class="run-head"><h3>' + escapeHtml(run.campaignName || run.id) + '</h3><small>状态：' + escapeHtml(recovering ? '等待本机继续' : labels[run.status] || run.status) + '</small></div><div class="counts"><span><b>' + Number(p.feedItemsSeen || 0) + '</b>浏览作品</span><span><b>' + Number(p.creatorProfilesSeen || 0) + '</b>核验作者</span><span><b>' + Number(p.candidatesFound || 0) + '</b>硬筛通过</span><span><b>' + Number(low.skippedTotal || 0) + '</b>解析跳过</span></div>' + (run.localMessage ? '<p class="run-note">' + escapeHtml(run.localMessage) + '</p>' : '') + recoveryNote + latest + '<div class="actions">' + start + pause + resume + terminate + '</div></article>';
       }).join('') : '<p class="empty">还没有可执行的运行。请在工作台「筛选任务」保存任务后，点击「创建运行」。</p>';
     }

@@ -102,7 +102,7 @@ describe('本地控制页中心 API 客户端', () => {
         runs: recoveryRuns,
         runtime: runtimeStatus,
       });
-      expect(COLLECTOR_CONTROL_HTML).toContain('恢复诊断：');
+      expect(COLLECTOR_CONTROL_HTML).toContain('最近一次恢复记录（不代表当前步骤）：');
       expect(COLLECTOR_CONTROL_HTML).toContain("reload_page:'重新加载当前页'");
       expect(COLLECTOR_CONTROL_HTML).toContain("recovered:'已恢复'");
       expect(COLLECTOR_CONTROL_HTML).toContain("circuit_open:'恢复熔断'");
@@ -222,7 +222,7 @@ describe('本地控制页中心 API 客户端', () => {
     expect(requests).toEqual([{ method: 'GET', url: 'https://ops.example.test/collector/runs' }]);
     expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
       'x-collector-protocol-version': '1.0.0',
-      'x-collector-version': '0.1.6',
+      'x-collector-version': '0.1.9',
       'x-parser-version': '0.5.0',
     });
 
