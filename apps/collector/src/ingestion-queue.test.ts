@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -117,5 +117,47 @@ describe('本地持久待同步队列', () => {
         observations: [{ ...batch.observations[0], nickname: '被修改的达人' }],
       }),
     ).rejects.toThrow('does not match');
+  });
+
+  it('写盘遭遇瞬时文件锁时有界重试后成功', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-ingestion-queue-lock-'));
+    temporaryDirectories.push(dataRoot);
+    const lockError = () => Object.assign(new Error('locked by scanner'), { code: 'EPERM' });
+    let calls = 0;
+    const queue = new PersistentIngestionQueue(dataRoot, {
+      replaceFile: async (target, content) => {
+        calls += 1;
+        if (calls < 3) throw lockError();
+        const { mkdir, writeFile } = await import('node:fs/promises');
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, content, 'utf8');
+      },
+    });
+
+    await queue.enqueue(batch, new Date('2026-09-15T00:00:00.000Z'));
+
+    expect(calls).toBe(3);
+    expect(await queue.listPending()).toHaveLength(1);
+  });
+
+  it('写盘最终失败时抛出原错误且不留临时文件', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-ingestion-queue-lock-'));
+    temporaryDirectories.push(dataRoot);
+    const queue = new PersistentIngestionQueue(dataRoot);
+    await queue.enqueue(batch, new Date('2026-09-15T00:00:00.000Z'));
+    const [record] = await queue.listPending();
+    // A directory at the record path makes the atomic rename fail on every platform.
+    await rm(path.join(dataRoot, 'pending-ingestion', `${record.id}.json`));
+    await mkdir(path.join(dataRoot, 'pending-ingestion', `${record.id}.json`));
+
+    await expect(
+      queue.processNext(
+        { sendBatch: vi.fn().mockRejectedValue(new Error('offline')) },
+        { now: new Date('2026-09-15T00:00:00.000Z') },
+      ),
+    ).rejects.toBeInstanceOf(Error);
+
+    const leftovers = await readdir(path.join(dataRoot, 'pending-ingestion'));
+    expect(leftovers.filter((file) => file.endsWith('.tmp'))).toEqual([]);
   });
 });

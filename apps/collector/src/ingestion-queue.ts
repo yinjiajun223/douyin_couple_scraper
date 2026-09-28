@@ -27,6 +27,14 @@ export interface ProcessQueueOptions {
   now?: Date;
 }
 
+export interface IngestionQueueOptions {
+  /** Test seam: replaces the atomic tmp+rename write of a queue record. */
+  replaceFile?: (target: string, content: string) => Promise<void>;
+}
+
+const REPLACE_RETRY_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const REPLACE_ATTEMPTS = 3;
+
 export type ProcessQueueResult =
   | { status: 'empty' | 'not_due' }
   | { acknowledgement: IngestionAcknowledgement; status: 'completed' }
@@ -41,9 +49,12 @@ export class IngestionAcknowledgementMismatchError extends Error {
 
 export class PersistentIngestionQueue {
   private readonly queueDirectory: string;
+  private readonly replaceFile: (target: string, content: string) => Promise<void>;
 
-  public constructor(dataDirectory: string) {
+  public constructor(dataDirectory: string, options: IngestionQueueOptions = {}) {
     this.queueDirectory = path.join(path.resolve(dataDirectory), 'pending-ingestion');
+    this.replaceFile =
+      options.replaceFile ?? ((target, content) => this.replaceFileAtomic(target, content));
   }
 
   public async enqueue(rawBatch: unknown, now = new Date()): Promise<string> {
@@ -167,9 +178,36 @@ export class PersistentIngestionQueue {
   private async writeRecord(record: IngestionQueueRecord): Promise<void> {
     await mkdir(this.queueDirectory, { recursive: true });
     const target = this.recordPath(record.id);
+    const content = `${JSON.stringify(record)}\n`;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= REPLACE_ATTEMPTS; attempt += 1) {
+      try {
+        await this.replaceFile(target, content);
+        return;
+      } catch (error) {
+        lastError = error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!code || !REPLACE_RETRY_CODES.has(code) || attempt === REPLACE_ATTEMPTS) break;
+        await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Windows antivirus/manager software can hold a transient lock on the queue
+   * record, making rename fail with EPERM/EACCES/EBUSY. Never leave a stale tmp
+   * file behind when a replace attempt fails.
+   */
+  private async replaceFileAtomic(target: string, content: string): Promise<void> {
     const temporary = `${target}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, target);
+    await writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
+    try {
+      await rename(temporary, target);
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
   }
 
   private recordPath(id: string): string {
