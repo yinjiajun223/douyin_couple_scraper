@@ -47,3 +47,8 @@
 - [x] 7.2 标签级导航事件写入脱敏恢复日志：主框架 `framenavigated`、自愈返回与标签关闭各追加一条 `kind: navigation` 记录到 `data/diagnostics/recovery.jsonl`，仅含时间、运行 ID、页面角色、浏览器代际、进度计数与固定分类代码（recommend/account_self/account_other/video/login/other/foreign/unparsable/closed），与恢复事件同文件同轮换限额。验证：`recovery-log.test.ts` 断言分类函数对各类地址只产出固定代码、写入行不含地址标识与查询串；运行级测试断言自愈与观测记录不含 `from_tab_name`、`/user/self` 或作者标识。
 - [x] 7.3 同步 README、product-manual、operator-guide、collector-windows 与 collector-macos：说明自愈边界（每轮 2 次、跨域/登录/验证页与超限仍暂停）、新暂停提示的人工处理方式和导航记录位置，并声明不点击或绕过站内元素、macOS 未构建未验收。验证：文档限次与分类代码表述与代码一致，命令仍可完整复制。
 - [ ] 7.4 真机观察：v0.1.10 安装到运营电脑后，在下一次真实运行中确认 `recovery.jsonl` 能记录导航分类，且站内跳转按设计自愈或暂停。验证：以真实记录为准；没有记录只说明该轮未发生跳转，不记为测试通过。
+
+## 8. 同步队列写盘抗瞬时文件锁（v0.1.10 后续加固）
+
+- [x] 8.1 队列记录写盘对 EPERM/EACCES/EBUSY 做有界重试（3 次，150/300ms 退避），最终失败抛原错误并清理 tmp 文件；替换动作经可注入缝实现以便回归。背景：2026-09-28 15:06 真机 rename 被外部句柄瞬时锁定报 EPERM 暂停并残留 tmp，resume 后重发即成功，确认为瞬时锁而非授权或服务端故障。验证：`ingestion-queue.test.ts` 新增「瞬时锁有界重试后成功」与「最终失败不留 tmp」两例，连同既有用例全绿；`npm run check` 通过。
+- [ ] 8.2 真机观察：后续长运行确认 EPERM 暂停是否复发；若复发频繁，排查本机实时扫描软件（杀毒/管家类）并为共享 `data` 目录添加排除项。验证：以 `errors.jsonl` 与 `pending-ingestion` 目录状态为准，不记为测试通过。
