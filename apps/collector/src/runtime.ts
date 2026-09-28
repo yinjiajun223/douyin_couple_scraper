@@ -1252,11 +1252,10 @@ export class CollectorRuntime {
 
   private normalizeCheckpoint(state: Checkpoint): Checkpoint {
     const lowConfidence = state.lowConfidence;
+    const repairs = state.feedRedirectRepairs;
     return {
       ...state,
-      feedRedirectRepairs: Number.isInteger(state.feedRedirectRepairs)
-        ? Math.max(0, state.feedRedirectRepairs)
-        : 0,
+      feedRedirectRepairs: Number.isInteger(repairs) ? Math.max(0, repairs ?? 0) : 0,
       lowConfidence: {
         consecutiveFailures: Number.isInteger(lowConfidence?.consecutiveFailures)
           ? Math.max(0, lowConfidence.consecutiveFailures)
