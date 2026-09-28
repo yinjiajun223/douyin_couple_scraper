@@ -34,6 +34,10 @@ v0.1.8 修复普通作品文字提到“验证码”“安全验证”即误暂�
 
 控制页显示当前步骤及等待秒数，作者核验细分打开页面、等待稳定、作品接口正文、读取内容、安全检查和解析。补充作品接口正文最多等待 5 秒，超时后仍做安全检查，仅使用已获得的 DOM/接口证据，缺失字段不按 0 猜测；这个上限不是整个作者核验或所有暂停操作的上限。旧恢复记录标注发生时间，不代表当前正在恢复。若再次长时间不动，请先截图当前步骤与计数，再点一次暂停；持续“正在暂停”时联系管理员，不要反复点击或删除共享数据。
 
+### v0.1.10 站内跳转自愈与导航观测
+
+推荐页标签被站内跳转带走并停在同源非推荐页（如账号自己的主页）时，助手自动导航回推荐页继续，每轮运行最多 2 次，检查点记录已用次数（`feedRedirectRepairs`，旧检查点归一化为 0）。超过限次、地址无法解析、或标签停在跨域/登录/验证页时仍安全暂停，提示人工打开推荐页后再继续。每次标签级导航（主框架跳转、自愈返回、标签关闭）以固定分类代码追加写入共享 `data/diagnostics/recovery.jsonl`（`kind: navigation`），与恢复事件同文件同轮换限额；只写分类代码与进度计数，不写地址路径、查询串、Cookie 或令牌，也不上传。该能力不点击、不填写、不绕过任何站内元素。
+
 ## 设备被撤销
 
 管理员在网页端撤销设备（或停用你的账号）后，本机会立即失去同步与领取运行的权限，控制页显示授权失败。已撤销的设备在网页端默认隐藏、也无法删除，只作为只读历史保留；要继续使用只能在本机用新的配对码重新配对，旧令牌不会恢复。撤销不影响已经入库的候选与证据。
@@ -54,8 +58,8 @@ v0.1.8 修复普通作品文字提到“验证码”“安全验证”即误暂�
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.9.zip
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.9.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.10.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.10.zip
 npm run build -w @douyin/collector
 node scripts/test-collector-safety-dom.mjs
 ```

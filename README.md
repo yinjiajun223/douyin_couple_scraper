@@ -31,7 +31,9 @@ v0.1.7 新增本机“最近错误诊断”，保留出错步骤、时间、错�
 
 v0.1.8 修复普通作品文案提到“验证码”等词就误暂停的问题，改为识别验证地址、可见验证界面和明确提示；真实验证仍暂停。安全暂停也记录推荐页/作者页及固定触发依据，便于人工核对。浏览器 DOM 回归：构建采集器后运行 `node scripts/test-collector-safety-dom.mjs`，使用隔离 Chrome 与本地模拟页面，不访问运营账号。
 
-v0.1.9 为作者作品接口正文的补充证据等待设置 5 秒上限，避免响应不结束导致一直“采集中”且人工暂停也等待；到期仍检查页面安全状态，只使用已获得证据，缺失信息保持未知。控制页新增当前步骤、作者核验子步骤与等待时长，并给历史恢复记录显示发生时间。这不代表已消除所有浏览器卡死，详见 `docs/releases/collector-v0.1.9.md`。
+v0.1.10 起，推荐页标签被站内跳转带走并停在同源非推荐页（如账号自己的主页）时，助手会自动导航回推荐页继续，每轮运行最多 2 次；超过限次、或标签停在跨域/登录/验证页时仍按原样安全暂停并需人工处理。导航事件以固定分类代码写入本机脱敏恢复日志，不含地址标识与查询串，也不上传。该能力只改变标签被带走后的恢复方式，不点击或绕过任何站内元素。
+
+v0.1.10 为作者作品接口正文的补充证据等待设置 5 秒上限，避免响应不结束导致一直“采集中”且人工暂停也等待；到期仍检查页面安全状态，只使用已获得证据，缺失信息保持未知。控制页新增当前步骤、作者核验子步骤与等待时长，并给历史恢复记录显示发生时间。这不代表已消除所有浏览器卡死，详见 `docs/releases/collector-v0.1.10.md`。
 
 ## 文档入口
 
@@ -93,13 +95,13 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.9 `
+  -Version 0.1.10 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.9.zip
+  -PackagePath artifacts/collector-windows-v0.1.10.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
@@ -110,13 +112,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```bash
 bash scripts/build-collector-macos.sh \
-  --version 0.1.9 \
+  --version 0.1.10 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
 
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.9.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.10.tar.gz'
 ```
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。

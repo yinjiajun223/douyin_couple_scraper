@@ -9,6 +9,48 @@ import type { CollectionNavigationErrorCode, CollectionSafetyIssueCode } from '.
 const DEFAULT_MAX_BYTES = 1_024 * 1_024;
 const DEFAULT_MAX_FILES = 3;
 
+/**
+ * Coarse, desensitized navigation classes. Never a raw URL: no profile identifiers,
+ * no query strings, no paths beyond the class itself.
+ */
+export type NavigationObservationCode =
+  | 'account_other'
+  | 'account_self'
+  | 'closed'
+  | 'foreign'
+  | 'login'
+  | 'other'
+  | 'recommend'
+  | 'unparsable'
+  | 'video';
+
+export function classifyNavigationObservation(rawUrl: string): NavigationObservationCode {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return 'unparsable';
+  }
+  if (url.origin !== 'https://www.douyin.com') return 'foreign';
+  const pathname = url.pathname;
+  if (pathname === '/' || pathname.startsWith('/jingxuan')) return 'recommend';
+  if (pathname.startsWith('/passport') || /\/login(?:[/?#]|$)/u.test(pathname)) return 'login';
+  if (pathname === '/user/self' || pathname.startsWith('/user/self/')) return 'account_self';
+  if (pathname.startsWith('/user/')) return 'account_other';
+  if (pathname.startsWith('/video/')) return 'video';
+  return 'other';
+}
+
+export interface NavigationLogInput {
+  at: string;
+  browserGeneration: number;
+  navigationCode: NavigationObservationCode;
+  pageType: RecoveryPageType;
+  progress: CollectorRunProgress;
+  result: 'closed' | 'observed' | 'repaired';
+  runId: string;
+}
+
 export interface RecoveryLogInput {
   at: string;
   browserGeneration: number;
@@ -56,6 +98,29 @@ export class RecoveryEventLog {
       ...(input.statusCode === undefined ? {} : { statusCode: Math.trunc(input.statusCode) }),
     };
     const line = `${JSON.stringify(safeEvent)}\n`;
+    await this.appendRaw(line);
+  }
+
+  public async appendNavigation(input: NavigationLogInput): Promise<void> {
+    const safeEvent = {
+      at: input.at,
+      browserGeneration: Math.max(0, Math.trunc(input.browserGeneration)),
+      kind: 'navigation',
+      navigationCode: input.navigationCode,
+      pageType: input.pageType,
+      progress: {
+        candidatesFound: Math.max(0, Math.trunc(input.progress.candidatesFound)),
+        creatorProfilesSeen: Math.max(0, Math.trunc(input.progress.creatorProfilesSeen)),
+        elapsedSeconds: Math.max(0, Math.trunc(input.progress.elapsedSeconds)),
+        feedItemsSeen: Math.max(0, Math.trunc(input.progress.feedItemsSeen)),
+      },
+      result: input.result,
+      runId: input.runId,
+    };
+    await this.appendRaw(`${JSON.stringify(safeEvent)}\n`);
+  }
+
+  private async appendRaw(line: string): Promise<void> {
     await mkdir(this.directory, { recursive: true });
     if ((await this.currentSize()) + Buffer.byteLength(line, 'utf8') > this.limits.maxBytes) {
       await this.rotate();

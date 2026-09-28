@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { RecoveryEventLog } from './recovery-log.js';
+import { classifyNavigationObservation, RecoveryEventLog } from './recovery-log.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -68,5 +68,49 @@ describe('恢复事件脱敏日志', () => {
     expect(combined).not.toMatch(
       /cookie|authorization|deviceToken|bodyText|responseBody|profileUrl|title/u,
     );
+  });
+
+  it('导航分类只产出固定代码，不保留地址标识与查询串', async () => {
+    expect(classifyNavigationObservation('https://www.douyin.com/')).toBe('recommend');
+    expect(classifyNavigationObservation('https://www.douyin.com/jingxuan?channel=hot')).toBe(
+      'recommend',
+    );
+    expect(
+      classifyNavigationObservation('https://www.douyin.com/user/self?from_tab_name=main'),
+    ).toBe('account_self');
+    expect(classifyNavigationObservation('https://www.douyin.com/user/MS4wLjABAAAAxyz')).toBe(
+      'account_other',
+    );
+    expect(classifyNavigationObservation('https://www.douyin.com/video/7800000000000000001')).toBe(
+      'video',
+    );
+    expect(classifyNavigationObservation('https://www.douyin.com/passport/web/login')).toBe(
+      'login',
+    );
+    expect(classifyNavigationObservation('https://example.com/feed')).toBe('foreign');
+    expect(classifyNavigationObservation('not a url')).toBe('unparsable');
+
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-navigation-log-'));
+    temporaryDirectories.push(dataRoot);
+    const log = new RecoveryEventLog(dataRoot);
+    await log.appendNavigation({
+      at: '2026-09-28T03:18:00.000Z',
+      browserGeneration: 1,
+      navigationCode: 'account_other',
+      pageType: 'feed',
+      progress: {
+        candidatesFound: 0,
+        creatorProfilesSeen: 48,
+        elapsedSeconds: 343,
+        feedItemsSeen: 48,
+      },
+      result: 'observed',
+      runId: '00000000-0000-4000-8000-000000000031',
+    });
+    const line = await readFile(path.join(dataRoot, 'diagnostics', 'recovery.jsonl'), 'utf8');
+    expect(line).toContain('"kind":"navigation"');
+    expect(line).toContain('"navigationCode":"account_other"');
+    expect(line).not.toContain('MS4wLjABAAAA');
+    expect(line).not.toContain('?');
   });
 });

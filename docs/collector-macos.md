@@ -26,6 +26,8 @@ v0.1.7 的共享控制页新增“最近错误诊断”，保留出错步骤、�
 
 共享源码 v0.1.9 对补充作品接口正文设置 5 秒等待上限，增加当前步骤、作者核验子步骤与等待时长；历史恢复记录注明发生时间。此上限不涵盖所有浏览器操作，真实验证仍暂停。macOS v0.1.9 未构建和完成双架构真机验收。
 
+共享源码 v0.1.10 对“推荐页标签被站内跳转带走”增加有界自愈：停在同源非推荐页时自动导航回推荐页，每轮运行最多 2 次；跨域、登录、验证页或超过限次仍安全暂停。标签级导航以固定分类代码写入共享 `data/diagnostics/recovery.jsonl`，不含地址标识与查询串。macOS v0.1.10 未构建和完成双架构真机验收，此说明仅代表源码行为。
+
 ## 设备被撤销
 
 管理员在网页端撤销设备（或停用你的账号）后，本机会立即失去同步与领取运行的权限，控制页显示授权失败。已撤销的设备在网页端默认隐藏、也无法删除，只作为只读历史保留；要继续使用只能在本机用新的配对码重新配对，钥匙串里的旧令牌不会恢复。撤销不影响已经入库的候选与证据。
@@ -53,7 +55,7 @@ v0.1.7 的共享控制页新增“最近错误诊断”，保留出错步骤、�
 cd /path/to/douyin_couple_scraper
 npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/build-collector-macos.sh \
-  --version 0.1.9 \
+  --version 0.1.10 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
@@ -70,7 +72,7 @@ bash scripts/build-collector-macos.sh \
 ```bash
 cd /path/to/douyin_couple_scraper
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.9.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.10.tar.gz'
 ```
 
 验证内容包括：包内 Node 可执行、Keychain 设备令牌往返、独立画像创建、可见 Chrome 启动和本地控制页。测试使用临时数据目录，结束时删除对应的测试钥匙串项目。若测试机暂时没有 Chrome，可以加 `--skip-visible-chrome` 做不完整检查，但该结果不能作为正式发布验收。

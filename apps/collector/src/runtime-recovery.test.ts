@@ -21,8 +21,14 @@ afterEach(async () => {
 
 type ProfileOutcome = 'transient' | 'trusted' | 'captcha';
 
-function createFeedPage(options?: { transientAfterFirstSafetyCheck?: boolean }) {
-  const html = `<article>
+function createFeedPage(options?: {
+  transientAfterFirstSafetyCheck?: boolean;
+  feedHtml?: string;
+  initialUrl?: string;
+}) {
+  const html =
+    options?.feedHtml ??
+    `<article>
     <a href="/video/7800000000000000001" aria-label="恢复测试作品">作品</a>
     <a href="/user/runtime-recovery-creator">恢复测试作者</a>
     <span data-e2e="video-like-count">1.5万</span>
@@ -30,13 +36,17 @@ function createFeedPage(options?: { transientAfterFirstSafetyCheck?: boolean }) 
   let bodyReads = 0;
   let closed = false;
   let recovered = false;
-  return {
+  let currentUrl = options?.initialUrl ?? 'https://www.douyin.com/';
+  const page = {
     bringToFront: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockImplementation(async () => {
       closed = true;
     }),
     evaluate: vi.fn().mockResolvedValue({ moved: false, target: 'document' }),
-    goto: vi.fn().mockResolvedValue(undefined),
+    goto: vi.fn().mockImplementation(async (url: string) => {
+      currentUrl = url;
+      return undefined;
+    }),
     isClosed: () => closed,
     locator: (selector: string) =>
       selector === 'body'
@@ -50,14 +60,21 @@ function createFeedPage(options?: { transientAfterFirstSafetyCheck?: boolean }) 
             },
           }
         : { evaluateAll: async () => html },
+    mainFrame: () => page,
     mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+    navigateTo: (url: string) => {
+      currentUrl = url;
+    },
+    off: vi.fn(),
+    on: vi.fn(),
     reload: vi.fn().mockImplementation(async () => {
       recovered = true;
     }),
     title: async () => '抖音精选',
-    url: () => 'https://www.douyin.com/',
+    url: () => currentUrl,
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
   };
+  return page;
 }
 
 function createProfilePage(outcomes: ProfileOutcome[], onTrusted?: () => void) {
@@ -141,6 +158,7 @@ async function createRecoveryRuntime(
   contexts: Array<ReturnType<typeof createContext>>,
   options?: {
     recovery?: Record<string, unknown>;
+    checkpointExtra?: Record<string, unknown>;
     now?: () => number;
     completeWhen?: (progress: CollectorRunProgress) => boolean;
     onBatch?: () => void;
@@ -151,7 +169,7 @@ async function createRecoveryRuntime(
   const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-runtime-recovery-'));
   temporaryDirectories.push(dataRoot);
   const runId = '00000000-0000-4000-8000-000000000020';
-  if (options?.recovery) {
+  if (options?.recovery || options?.checkpointExtra) {
     const directory = path.join(dataRoot, 'runs');
     await mkdir(directory, { recursive: true });
     await writeFile(
@@ -172,6 +190,7 @@ async function createRecoveryRuntime(
         message: '',
         lowConfidence: { consecutiveFailures: 0, lastIssue: null, skippedTotal: 0 },
         recovery: options.recovery,
+        ...options.checkpointExtra,
       }),
       'utf8',
     );
@@ -299,7 +318,9 @@ describe('长运行暂时性故障恢复', () => {
             evaluate: vi.fn().mockRejectedValue(new Error('DOM unavailable')),
           }
         : originalLocator(selector);
-    const harness = await createRecoveryRuntime([createContext([], feed)]);
+    const harness = await createRecoveryRuntime([
+      createContext([createProfilePage(['trusted'])], feed),
+    ]);
     await expect(harness.runtime.start(harness.runId)).rejects.toThrow('DOM unavailable');
     expect(harness.apiClient.startRun).not.toHaveBeenCalled();
   });
@@ -350,7 +371,9 @@ describe('长运行暂时性故障恢复', () => {
             evaluate: vi.fn().mockResolvedValue('CAPTCHA_VISIBLE_WIDGET'),
           }
         : originalLocator(selector);
-    const harness = await createRecoveryRuntime([createContext([], feed)]);
+    const harness = await createRecoveryRuntime([
+      createContext([createProfilePage(['trusted'])], feed),
+    ]);
     await expect(harness.runtime.start(harness.runId)).rejects.toThrow('安全验证');
     expect(harness.apiClient.startRun).not.toHaveBeenCalled();
     await expect(harness.runtime.status()).resolves.toMatchObject({
@@ -736,5 +759,159 @@ describe('长运行暂时性故障恢复', () => {
       message: expect.stringContaining('恢复预算已耗尽'),
       recovery: { lastResult: 'exhausted', stage: 'restart_browser' },
     });
+  });
+});
+
+describe('推荐页被站内跳转带走时的自愈与导航观测', () => {
+  const straySelfUrl = 'https://www.douyin.com/user/self?from_tab_name=main';
+
+  async function readRecoveryLog(dataRoot: string): Promise<string> {
+    return readFile(path.join(dataRoot, 'diagnostics', 'recovery.jsonl'), 'utf8').catch(() => '');
+  }
+
+  async function readCheckpoint(dataRoot: string, runId: string): Promise<Record<string, unknown>> {
+    const raw = await readFile(
+      path.join(dataRoot, 'runs', `${createHash('sha256').update(runId).digest('hex')}.json`),
+      'utf8',
+    );
+    return JSON.parse(raw) as Record<string, unknown>;
+  }
+
+  function strayAfterReports(feed: ReturnType<typeof createFeedPage>, url: string, at = 3) {
+    let reports = 0;
+    return () => {
+      reports += 1;
+      if (reports === at) feed.navigateTo(url);
+      return reports;
+    };
+  }
+
+  it('推荐页标签停在同源个人主页时自动返回推荐页并继续，且留下脱敏导航记录', async () => {
+    const feed = createFeedPage({ feedHtml: '' });
+    const count = strayAfterReports(feed, straySelfUrl);
+    const harness = await createRecoveryRuntime(
+      [createContext([createProfilePage(['trusted'])], feed)],
+      {
+        completeWhen: () => count() > 14,
+      },
+    );
+
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+
+    const recommendNavigations = feed.goto.mock.calls.filter(
+      (call) => call[0] === 'https://www.douyin.com/',
+    );
+    expect(recommendNavigations).toHaveLength(2);
+    expect(harness.changeRunStatus).not.toHaveBeenCalledWith(harness.runId, 'pause');
+    expect(feed.url()).toBe('https://www.douyin.com/');
+    const checkpoint = await readCheckpoint(harness.dataRoot, harness.runId);
+    expect(checkpoint.feedRedirectRepairs).toBe(1);
+    const log = await readRecoveryLog(harness.dataRoot);
+    expect(log).toContain('"navigationCode":"account_self"');
+    expect(log).toContain('"result":"repaired"');
+    expect(log).not.toContain('from_tab_name');
+    expect(log).not.toContain('/user/self');
+  });
+
+  it('同源站内跳转自愈超过限次后暂停且不重复导航', async () => {
+    const feed = createFeedPage({ feedHtml: '' });
+    const count = strayAfterReports(feed, straySelfUrl);
+    const harness = await createRecoveryRuntime(
+      [createContext([createProfilePage(['trusted'])], feed)],
+      {
+        checkpointExtra: { feedRedirectRepairs: 2 },
+        completeWhen: () => count() > 14,
+      },
+    );
+
+    await harness.runtime.start(harness.runId);
+
+    await vi.waitFor(() =>
+      expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause'),
+    );
+    const recommendNavigations = feed.goto.mock.calls.filter(
+      (call) => call[0] === 'https://www.douyin.com/',
+    );
+    expect(recommendNavigations).toHaveLength(1);
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      message: expect.stringContaining('多次被站内跳转带走'),
+    });
+  });
+
+  it('推荐页标签跨域时仍按原样暂停不自愈', async () => {
+    const feed = createFeedPage({ feedHtml: '' });
+    const count = strayAfterReports(feed, 'https://example.com/feed');
+    const harness = await createRecoveryRuntime(
+      [createContext([createProfilePage(['trusted'])], feed)],
+      {
+        completeWhen: () => count() > 14,
+      },
+    );
+
+    await harness.runtime.start(harness.runId);
+
+    await vi.waitFor(() =>
+      expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause'),
+    );
+    const recommendNavigations = feed.goto.mock.calls.filter(
+      (call) => call[0] === 'https://www.douyin.com/',
+    );
+    expect(recommendNavigations).toHaveLength(1);
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      message: expect.stringContaining('当前页面不是抖音推荐页'),
+    });
+  });
+
+  it('推荐页标签停在登录页时仍按原样暂停不自愈', async () => {
+    const feed = createFeedPage({ feedHtml: '' });
+    const count = strayAfterReports(feed, 'https://www.douyin.com/passport/web/login?aid=1');
+    const harness = await createRecoveryRuntime(
+      [createContext([createProfilePage(['trusted'])], feed)],
+      {
+        completeWhen: () => count() > 14,
+      },
+    );
+
+    await harness.runtime.start(harness.runId);
+
+    await vi.waitFor(() =>
+      expect(harness.changeRunStatus).toHaveBeenCalledWith(harness.runId, 'pause'),
+    );
+    const recommendNavigations = feed.goto.mock.calls.filter(
+      (call) => call[0] === 'https://www.douyin.com/',
+    );
+    expect(recommendNavigations).toHaveLength(1);
+    await expect(harness.runtime.status()).resolves.toMatchObject({
+      message: expect.stringContaining('抖音登录状态已失效'),
+    });
+  });
+
+  it('标签级导航事件写入脱敏记录，不含地址路径与查询串', async () => {
+    const feed = createFeedPage();
+    let navigated: ((frame: { url(): string }) => void) | undefined;
+    feed.on.mockImplementation((event: string, listener: (frame: { url(): string }) => void) => {
+      if (event === 'framenavigated') navigated = listener;
+    });
+    const harness = await createRecoveryRuntime([
+      createContext([createProfilePage(['trusted'])], feed),
+    ]);
+
+    await harness.runtime.start(harness.runId);
+    await vi.waitFor(() =>
+      expect(harness.runtime.status()).resolves.toMatchObject({ activeRunId: null }),
+    );
+    expect(navigated).toBeDefined();
+    feed.navigateTo('https://www.douyin.com/user/MS4wLjABAAAAxyz?token=secret');
+    navigated?.(feed);
+    await vi.waitFor(async () => {
+      expect(await readRecoveryLog(harness.dataRoot)).toContain('"navigationCode":"account_other"');
+    });
+    const log = await readRecoveryLog(harness.dataRoot);
+    expect(log).not.toContain('MS4wLjABAAAAxyz');
+    expect(log).not.toContain('token=secret');
+    expect(log).toContain('"result":"observed"');
   });
 });

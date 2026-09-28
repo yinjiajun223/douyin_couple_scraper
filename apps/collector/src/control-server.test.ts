@@ -222,7 +222,7 @@ describe('本地控制页中心 API 客户端', () => {
     expect(requests).toEqual([{ method: 'GET', url: 'https://ops.example.test/collector/runs' }]);
     expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
       'x-collector-protocol-version': '1.0.0',
-      'x-collector-version': '0.1.9',
+      'x-collector-version': '0.1.10',
       'x-parser-version': '0.5.0',
     });
 

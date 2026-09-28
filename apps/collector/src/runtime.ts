@@ -36,8 +36,8 @@ import {
   recoveryDelayMs,
   recoveryStartIndex,
 } from './recovery-controller.js';
-import type { RecoveryCheckpoint } from './recovery-controller.js';
-import { RecoveryEventLog } from './recovery-log.js';
+import type { RecoveryCheckpoint, RecoveryPageType } from './recovery-controller.js';
+import { classifyNavigationObservation, RecoveryEventLog } from './recovery-log.js';
 import {
   decideLowConfidenceAction,
   DEFAULT_LOW_CONFIDENCE_POLICY,
@@ -51,6 +51,14 @@ import { readCaptchaEvidence } from './captcha-evidence.js';
 
 const EMPTY_FEED_RECOVERY_INITIAL_PASSES = 8;
 const EMPTY_FEED_RECOVERY_MAX_INTERVAL = 64;
+const FEED_REDIRECT_REPAIR_LIMIT = 2;
+
+function isRecommendationUrl(url: URL): boolean {
+  return (
+    url.origin === 'https://www.douyin.com' &&
+    (url.pathname === '/' || url.pathname.startsWith('/jingxuan'))
+  );
+}
 
 interface Checkpoint {
   runId: string;
@@ -72,6 +80,7 @@ interface Checkpoint {
     skippedTotal: number;
   };
   recovery?: RecoveryCheckpoint;
+  feedRedirectRepairs?: number;
 }
 
 type RuntimeApi = Pick<
@@ -248,6 +257,7 @@ export class CollectorRuntime {
       this.stopped = true;
     });
     this.feedPage = context.pages()[0] ?? (await context.newPage());
+    this.observePageNavigation(this.feedPage, 'feed');
     await this.feedPage.goto('https://www.douyin.com/', {
       waitUntil: 'domcontentloaded',
       timeout: 30_000,
@@ -644,6 +654,7 @@ export class CollectorRuntime {
     if (!this.context) throw new Error('浏览器未打开，请重试。');
     if (this.profilePage && !this.profilePage.isClosed()) return this.profilePage;
     this.profilePage = await this.context.newPage();
+    this.observePageNavigation(this.profilePage, 'profile');
     return this.profilePage;
   }
 
@@ -1054,15 +1065,45 @@ export class CollectorRuntime {
         '当前浏览器地址无法识别，已暂停自动恢复。请人工打开抖音推荐页后继续。',
       );
     }
+    if (isRecommendationUrl(currentUrl)) return this.reloadCurrentFeedPage(page);
+    const navigationCode = classifyNavigationObservation(currentUrl.href);
     if (
-      currentUrl.origin !== 'https://www.douyin.com' ||
-      (currentUrl.pathname !== '/' && !currentUrl.pathname.startsWith('/jingxuan'))
+      navigationCode === 'foreign' ||
+      navigationCode === 'login' ||
+      navigationCode === 'unparsable'
     ) {
       throw new CollectionPausedError(
         '当前页面不是抖音推荐页，已暂停自动恢复。请人工打开抖音推荐页后继续。',
       );
     }
+    const state = this.checkpoint!;
+    const used = state.feedRedirectRepairs ?? 0;
+    if (used >= FEED_REDIRECT_REPAIR_LIMIT) {
+      throw new CollectionPausedError(
+        '推荐页多次被站内跳转带走，已暂停自动恢复。请人工打开抖音推荐页后继续。',
+      );
+    }
+    state.feedRedirectRepairs = used + 1;
+    state.message = `推荐页被站内跳转带走（${navigationCode}），正在自动返回推荐页（第 ${used + 1}/${FEED_REDIRECT_REPAIR_LIMIT} 次）；已见数据不会重复写入。`;
+    await this.saveCheckpoint();
+    await this.recordNavigation('feed', currentUrl.href, 'repaired');
+    try {
+      await page.goto('https://www.douyin.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000,
+      });
+      const issue = await this.findSafetyIssue(page);
+      if (issue?.code === 'transient_page_failure') return false;
+      if (issue) throw new CollectionPausedError(issue.humanMessage, issue, 'feed');
+      this.moduleFeedItems.clear();
+      return true;
+    } catch (error) {
+      if (error instanceof CollectionPausedError) throw error;
+      return false;
+    }
+  }
 
+  private async reloadCurrentFeedPage(page: Page): Promise<boolean> {
     this.moduleFeedItems.clear();
     try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
@@ -1074,6 +1115,38 @@ export class CollectorRuntime {
       if (error instanceof CollectionPausedError) throw error;
       return false;
     }
+  }
+
+  private observePageNavigation(page: Page, pageType: RecoveryPageType): void {
+    const generation = this.contextGeneration;
+    page.on('framenavigated', (frame) => {
+      if (generation !== this.contextGeneration || frame !== page.mainFrame()) return;
+      void this.recordNavigation(pageType, frame.url(), 'observed');
+    });
+    page.on('close', () => {
+      if (generation !== this.contextGeneration) return;
+      void this.recordNavigation(pageType, null, 'closed');
+    });
+  }
+
+  private async recordNavigation(
+    pageType: RecoveryPageType,
+    rawUrl: string | null,
+    result: 'closed' | 'observed' | 'repaired',
+  ): Promise<void> {
+    const state = this.checkpoint;
+    if (!state) return;
+    await this.recoveryLog
+      .appendNavigation({
+        at: new Date(this.now()).toISOString(),
+        browserGeneration: this.contextGeneration,
+        navigationCode: rawUrl === null ? 'closed' : classifyNavigationObservation(rawUrl),
+        pageType,
+        progress: state.progress,
+        result,
+        runId: state.runId,
+      })
+      .catch(() => undefined);
   }
 
   private async flushPending(): Promise<void> {
@@ -1181,6 +1254,9 @@ export class CollectorRuntime {
     const lowConfidence = state.lowConfidence;
     return {
       ...state,
+      feedRedirectRepairs: Number.isInteger(state.feedRedirectRepairs)
+        ? Math.max(0, state.feedRedirectRepairs)
+        : 0,
       lowConfidence: {
         consecutiveFailures: Number.isInteger(lowConfidence?.consecutiveFailures)
           ? Math.max(0, lowConfidence.consecutiveFailures)
