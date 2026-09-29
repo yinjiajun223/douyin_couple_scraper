@@ -113,6 +113,7 @@ export class PersistentIngestionQueue {
     try {
       acknowledgement = ingestionAcknowledgementSchema.parse(await sender.sendBatch(record.batch));
     } catch (error) {
+      if (!isRetryableSenderError(error)) throw error;
       record.attemptCount += 1;
       record.lastErrorCode = error instanceof Error ? error.name : 'UnknownError';
       record.nextAttemptAt = new Date(
@@ -213,6 +214,20 @@ export class PersistentIngestionQueue {
   private recordPath(id: string): string {
     return path.join(this.queueDirectory, `${id}.json`);
   }
+}
+
+function isRetryableSenderError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return true;
+  const candidate = error as { name?: unknown; status?: unknown };
+  if (typeof candidate.status === 'number') return candidate.status >= 500;
+  if (
+    candidate.name === 'CollectorNotPairedError' ||
+    candidate.name === 'CollectorUpgradeRequiredError' ||
+    candidate.name === 'ZodError'
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isQueueRecord(value: unknown): value is IngestionQueueRecord {

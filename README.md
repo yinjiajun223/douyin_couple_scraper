@@ -9,7 +9,7 @@
 - 团队登录、邀请、角色与设备授权。
 - 筛选任务、不可变规则快照和受控停止条件。
 - Windows/macOS 本机独立抖音画像、人工登录和人工开始。
-- 单次运行最长 1,440 分钟；服务异常、网络错误等暂时性页面故障采用有界退避恢复，验证码、登录失效和明确平台限制仍安全暂停。
+- 单次运行最长 1,440 分钟；作者页暂时故障恢复失败后跳过当前作者，推荐流与网络/5xx 采用可取消的封顶退避持续恢复；验证码、登录失效和明确平台限制仍安全暂停。
 - 达人、作品、观察历史、硬筛证据和私有截图；只有全部硬筛通过的达人才入库成为候选并采集截图，未入库达人的判定依据仍可在运行详情中查看。
 - 人工复核、负责人分配、联系信息与合作阶段；复核结论自动推进合作阶段，达人库按合作阶段分区。
 - 审计记录、生产健康检查、备份恢复和发布回滚。
@@ -34,6 +34,8 @@ v0.1.8 修复普通作品文案提到“验证码”等词就误暂停的问题�
 v0.1.10 起，推荐页标签被站内跳转带走并停在同源非推荐页（如账号自己的主页）时，助手会自动导航回推荐页继续，每轮运行最多 2 次；超过限次、或标签停在跨域/登录/验证页时仍按原样安全暂停并需人工处理。导航事件以固定分类代码写入本机脱敏恢复日志，不含地址标识与查询串，也不上传。该能力只改变标签被带走后的恢复方式，不点击或绕过任何站内元素。
 
 v0.1.10 为作者作品接口正文的补充证据等待设置 5 秒上限，避免响应不结束导致一直“采集中”且人工暂停也等待；到期仍检查页面安全状态，只使用已获得证据，缺失信息保持未知。控制页新增当前步骤、作者核验子步骤与等待时长，并给历史恢复记录显示发生时间。这不代表已消除所有浏览器卡死，详见 `docs/releases/collector-v0.1.10.md`。
+
+v0.1.11 起，单个作者页在重载、重建页面和同画像重启浏览器后仍为暂时性“服务异常”时，只跳过该作者并继续，不写入观察或截图；控制页显示累计“故障跳过”。推荐流暂时故障进入可取消的封顶冷却，批次同步与截图上传的网络/超时/5xx 持续使用本机持久数据退避重试。验证码、登录失效、访问频繁、账号异常、设备撤销、协议/业务拒绝、无效签名地址、未知错误和本地写盘失败仍安全暂停。跳过会降低本轮召回率，不等同于该作者不符合条件。
 
 ## 文档入口
 
@@ -95,13 +97,13 @@ npm run test:e2e
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/build-collector-windows.ps1 `
-  -Version 0.1.10 `
+  -Version 0.1.13 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File scripts/test-collector-windows-package.ps1 `
-  -PackagePath artifacts/collector-windows-v0.1.10.zip
+  -PackagePath artifacts/collector-windows-v0.1.13.zip
 ```
 
 使用公开可信 CA 的域名时省略 `CaCertificatePath`。使用自签名 HTTPS 时只打包公开证书，并通过 `NODE_EXTRA_CA_CERTS` 正常验证；禁止关闭 TLS 校验。
@@ -112,13 +114,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```bash
 bash scripts/build-collector-macos.sh \
-  --version 0.1.10 \
+  --version 0.1.13 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
 
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.10.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.13.tar.gz'
 ```
 
 通用包内同时包含 `arm64` 和 `x64` 两套经过校验的 Node.js 官方运行时，`start-collector.command` 会自动识别电脑架构。详见 [macOS 采集助手](docs/collector-macos.md)。

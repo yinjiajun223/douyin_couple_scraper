@@ -40,6 +40,12 @@ function renderPage() {
 }
 
 describe('本机诊断控制页', () => {
+  it('下拉框和面板使用工作台统一视觉规范', () => {
+    expect(COLLECTOR_CONTROL_HTML).toContain('--panel-radius: 8px 28px 8px 8px');
+    expect(COLLECTOR_CONTROL_HTML).toContain('select { appearance: none;');
+    expect(COLLECTOR_CONTROL_HTML).toContain('background-position: calc(100% - 17px) 18px');
+  });
+
   it('展示当前步骤等待时长及暂停状态，历史恢复记录不充当当前故障', () => {
     const { render, querySelector } = renderPage();
     const state = {
@@ -48,6 +54,12 @@ describe('本机诊断控制页', () => {
         {
           id: 'run',
           status: 'running',
+          recoverableSkips: {
+            lastPageType: 'profile',
+            lastReason: 'transient_page_failure',
+            lastSkippedAt: '2026-09-24T03:59:00.000Z',
+            total: 2,
+          },
           recoveryDiagnostics: {
             issueCode: 'transient_page_failure',
             lastResult: 'exhausted',
@@ -71,6 +83,9 @@ describe('本机诊断控制页', () => {
     expect(querySelector('#current-operation').textContent).toContain('作品接口正文');
     expect(querySelector('#current-operation').textContent).toContain('2 秒');
     expect(querySelector('#runs').innerHTML).toContain('最近一次恢复记录（不代表当前步骤）');
+    expect(querySelector('#runs').innerHTML).toContain('<b>2</b>故障跳过');
+    expect(querySelector('#runs').innerHTML).toContain('最近一次可恢复跳过（不代表当前步骤）');
+    expect(querySelector('#runs').innerHTML).toContain('已跳过并继续');
     state.runtime.currentOperation.elapsedSeconds = 4;
     render(state);
     expect(querySelector('#current-operation').textContent).toContain('4 秒');

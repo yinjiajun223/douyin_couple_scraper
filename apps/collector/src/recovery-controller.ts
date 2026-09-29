@@ -4,11 +4,19 @@ export type RecoveryPageType = 'feed' | 'profile';
 export type RecoveryStage =
   'circuit_open' | 'idle' | 'recreate_profile_page' | 'reload_page' | 'restart_browser';
 export type RecoveryResult =
-  'attempting' | 'cancelled' | 'exhausted' | 'idle' | 'recovered' | 'waiting';
+  | 'attempting'
+  | 'cancelled'
+  | 'cooling'
+  | 'exhausted'
+  | 'idle'
+  | 'recovered'
+  | 'skipped'
+  | 'waiting';
 
 export interface RecoveryCheckpoint {
   attemptCount: number;
   circuitBreakerCount: number;
+  coolingCycles: number;
   contextRestartTimestamps: string[];
   eventStartedAt: string | null;
   issueCode: CollectionSafetyIssue['code'] | null;
@@ -40,6 +48,7 @@ export function createIdleRecoveryCheckpoint(): RecoveryCheckpoint {
   return {
     attemptCount: 0,
     circuitBreakerCount: 0,
+    coolingCycles: 0,
     contextRestartTimestamps: [],
     eventStartedAt: null,
     issueCode: null,
@@ -61,9 +70,16 @@ export function normalizeRecoveryCheckpoint(value: unknown): RecoveryCheckpoint 
   else if (RECOVERY_STEPS.some((entry) => entry.stage === input.stage)) {
     stage = input.stage as RecoveryStage;
   }
-  const result = ['attempting', 'cancelled', 'exhausted', 'idle', 'recovered', 'waiting'].includes(
-    String(input.lastResult),
-  )
+  const result = [
+    'attempting',
+    'cancelled',
+    'cooling',
+    'exhausted',
+    'idle',
+    'recovered',
+    'skipped',
+    'waiting',
+  ].includes(String(input.lastResult))
     ? input.lastResult!
     : 'idle';
   return {
@@ -71,6 +87,7 @@ export function normalizeRecoveryCheckpoint(value: unknown): RecoveryCheckpoint 
     circuitBreakerCount: Number.isInteger(input.circuitBreakerCount)
       ? Math.max(0, input.circuitBreakerCount!)
       : 0,
+    coolingCycles: Number.isInteger(input.coolingCycles) ? Math.max(0, input.coolingCycles!) : 0,
     contextRestartTimestamps: Array.isArray(input.contextRestartTimestamps)
       ? input.contextRestartTimestamps.filter((entry): entry is string => typeof entry === 'string')
       : [],

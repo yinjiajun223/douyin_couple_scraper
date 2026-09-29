@@ -1797,6 +1797,84 @@ textarea:focus {
   font-weight: 800;
   text-decoration: none;
 }
+.candidate-quick-review {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 14px 22px;
+  margin: 20px -14px 0;
+  padding: 14px;
+  border: 1px solid #cfd6e2;
+  border-left: 4px solid var(--mint);
+  border-radius: 8px;
+  background: rgba(247, 249, 252, 0.96);
+  box-shadow: 0 12px 28px rgba(23, 32, 54, 0.12);
+  backdrop-filter: blur(12px);
+}
+.candidate-quick-review > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.candidate-quick-review > div:first-child > span {
+  color: var(--mint);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+}
+.candidate-quick-review strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+.candidate-quick-review small {
+  color: var(--graphite);
+  font-size: 10px;
+}
+.candidate-quick-review-actions {
+  display: flex;
+  gap: 8px;
+}
+.candidate-quick-review-actions button {
+  min-width: 88px;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease;
+}
+.candidate-quick-review-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.candidate-quick-approve {
+  color: white;
+  background: #237761;
+  box-shadow: 0 7px 18px rgba(35, 119, 97, 0.2);
+}
+.candidate-quick-review-actions .candidate-quick-reject {
+  border-color: #d9b7b0;
+  color: #92382b;
+  background: #fff3f0;
+}
+.candidate-quick-review-actions button[aria-pressed='true'] {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.candidate-quick-review-status,
+.candidate-quick-review-error {
+  grid-column: 1 / -1;
+}
+.candidate-quick-review > .candidate-quick-review-error {
+  color: #92382b;
+}
 .candidate-detail-section {
   margin-top: 32px;
   padding-top: 22px;
@@ -2826,6 +2904,15 @@ textarea:focus {
   }
   .candidate-library-filters {
     grid-template-columns: 1fr;
+  }
+  .candidate-quick-review {
+    position: static;
+    grid-template-columns: 1fr;
+    margin-right: 0;
+    margin-left: 0;
+  }
+  .candidate-quick-review-actions button {
+    flex: 1 1 0;
   }
   .panel-empty {
     grid-template-columns: 1fr;

@@ -862,6 +862,22 @@ export function CandidateDetailView({
     return result.ok;
   }
 
+  async function submitQuickReview(decision: 'approved' | 'rejected') {
+    setWorkflowMessage('');
+    const result = await submitRequest(`/candidates/${detail.candidate.id}/reviews`, {
+      decision,
+      expectedVersion: detail.workflow!.candidateVersion,
+      reason: null,
+    });
+    setWorkflowMessage(
+      result.ok
+        ? decision === 'approved'
+          ? '已通过人工复核。'
+          : '已标记为不符合。'
+        : result.message,
+    );
+  }
+
   async function loadPrivateImage(mediaId: string) {
     try {
       const downloadUrl = await requestSignedMediaUrl(mediaId);
@@ -889,6 +905,48 @@ export function CandidateDetailView({
           </a>
         ) : null}
       </header>
+
+      {canWrite && detail.workflow && !isArchived ? (
+        <div className="candidate-quick-review" role="group" aria-label="一键人工复核">
+          <div>
+            <span>QUICK REVIEW</span>
+            <strong>一键复核</strong>
+            <small>需要填写理由或设为待定时，可使用页面下方的完整表单。</small>
+          </div>
+          <div className="candidate-quick-review-actions">
+            <button
+              aria-pressed={detail.workflow.reviews[0]?.decision === 'approved'}
+              className="candidate-quick-approve"
+              disabled={saving}
+              onClick={() => void submitQuickReview('approved')}
+              type="button"
+            >
+              通过
+            </button>
+            <button
+              aria-pressed={detail.workflow.reviews[0]?.decision === 'rejected'}
+              className="candidate-quick-reject"
+              disabled={saving}
+              onClick={() => void submitQuickReview('rejected')}
+              type="button"
+            >
+              不通过
+            </button>
+          </div>
+          {saving || workflowMessage ? (
+            <small
+              className={
+                saving || !workflowMessage
+                  ? 'candidate-quick-review-status'
+                  : 'candidate-quick-review-error'
+              }
+              role={saving ? 'status' : workflowMessage ? 'alert' : undefined}
+            >
+              {saving ? '正在保存…' : workflowMessage}
+            </small>
+          ) : null}
+        </div>
+      ) : null}
 
       {canWrite ? (
         <div className="candidate-archive-actions">

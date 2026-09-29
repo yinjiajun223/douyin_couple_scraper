@@ -156,7 +156,10 @@ describe('本地采集运行设置', () => {
               evaluate: vi.fn().mockResolvedValue(null),
             }
           : { evaluateAll: async () => feedHtml },
+      mainFrame: () => feedPage,
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      off: vi.fn(),
+      on: vi.fn(),
       reload: vi.fn().mockResolvedValue(undefined),
       title: async () => '抖音精选',
       url: () => 'https://www.douyin.com/',
@@ -336,7 +339,10 @@ describe('本地采集运行设置', () => {
               evaluate: vi.fn().mockResolvedValue(null),
             }
           : { evaluateAll: async () => feedHtml },
+      mainFrame: () => feedPage,
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      off: vi.fn(),
+      on: vi.fn(),
       title: async () => '抖音精选',
       url: () => 'https://www.douyin.com/',
       waitForTimeout: vi.fn().mockResolvedValue(undefined),
@@ -473,7 +479,10 @@ describe('本地采集运行设置', () => {
               evaluate: vi.fn().mockResolvedValue(null),
             }
           : { evaluateAll: async () => '' },
+      mainFrame: () => feedPage,
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      off: vi.fn(),
+      on: vi.fn(),
       reload: vi.fn().mockResolvedValue(undefined),
       title: async () => '抖音精选',
       url: () => 'https://www.douyin.com/',
@@ -481,7 +490,12 @@ describe('本地采集运行设置', () => {
     };
     const browserContext = {
       close: vi.fn().mockResolvedValue(undefined),
-      newPage: vi.fn().mockResolvedValue({ isClosed: () => false }),
+      newPage: vi.fn().mockResolvedValue({
+        isClosed: () => false,
+        mainFrame: vi.fn(),
+        off: vi.fn(),
+        on: vi.fn(),
+      }),
       on: vi.fn(),
       once: vi.fn(),
       pages: () => [feedPage],
@@ -619,7 +633,10 @@ describe('本地采集运行设置', () => {
               evaluate: vi.fn().mockResolvedValue(null),
             }
           : { evaluateAll: async () => feedHtml },
+      mainFrame: () => feedPage,
       mouse: { wheel: vi.fn().mockResolvedValue(undefined) },
+      off: vi.fn(),
+      on: vi.fn(),
       reload: vi.fn().mockResolvedValue(undefined),
       title: async () => '抖音精选',
       url: () => 'https://www.douyin.com/',

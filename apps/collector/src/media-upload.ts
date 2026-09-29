@@ -34,9 +34,14 @@ export class CollectorMediaUploadError extends Error {
   public constructor(
     public readonly code:
       'api_request_failed' | 'invalid_signed_upload' | 'object_upload_failed' | 'unpaired_device',
+    public readonly status: number | null = null,
   ) {
     super(`Collector media upload failed: ${code}.`);
     this.name = 'CollectorMediaUploadError';
+  }
+
+  public get retryable(): boolean {
+    return this.status !== null && this.status >= 500;
   }
 }
 
@@ -71,7 +76,8 @@ export async function uploadScreenshotEvidence(
       signal: AbortSignal.timeout(15_000),
     },
   );
-  if (!uploadGrantResponse.ok) throw new CollectorMediaUploadError('api_request_failed');
+  if (!uploadGrantResponse.ok)
+    throw new CollectorMediaUploadError('api_request_failed', uploadGrantResponse.status);
   const grant = (await uploadGrantResponse.json()) as Record<string, unknown>;
   if (
     typeof grant.id !== 'string' ||
@@ -91,7 +97,8 @@ export async function uploadScreenshotEvidence(
     method: 'PUT',
     signal: AbortSignal.timeout(30_000),
   });
-  if (!uploadResponse.ok) throw new CollectorMediaUploadError('object_upload_failed');
+  if (!uploadResponse.ok)
+    throw new CollectorMediaUploadError('object_upload_failed', uploadResponse.status);
 
   const confirmationResponse = await fetcher(
     new URL(
@@ -112,7 +119,8 @@ export async function uploadScreenshotEvidence(
       signal: AbortSignal.timeout(15_000),
     },
   );
-  if (!confirmationResponse.ok) throw new CollectorMediaUploadError('api_request_failed');
+  if (!confirmationResponse.ok)
+    throw new CollectorMediaUploadError('api_request_failed', confirmationResponse.status);
   const confirmation = (await confirmationResponse.json()) as Record<string, unknown>;
   if (
     confirmation.id !== grant.id ||

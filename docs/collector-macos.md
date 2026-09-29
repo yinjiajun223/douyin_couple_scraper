@@ -18,7 +18,7 @@ macOS 助手与 Windows 助手使用相同的团队任务和本地控制页。�
 
 单次运行最长可配置 1,440 分钟，多个停止条件任一先到即停止。长运行前关闭 macOS 自动睡眠，并保持启动助手的“终端”窗口和可见 Chrome 打开；助手不会在电脑休眠、进程退出、验证码或明确平台限制后无人确认地继续。
 
-单独的服务异常、网络错误、请求异常或瞬时 5xx 会保存检查点，并按“重载当前页 → 重建页面 → 使用同一画像重启可见浏览器”的有界阶梯恢复。本机控制页显示类别、阶段、次数、下次尝试和结果；登录失效、验证码、访问频繁、账号异常及恢复预算耗尽仍安全暂停。脱敏恢复日志位于共享 `data/diagnostics`，最多 3 个 1 MiB 文件，不包含 Cookie、令牌、页面正文或完整主页地址。
+共享源码 v0.1.11 中，单个作者页暂时性服务异常经“重载当前页 → 重建页面 → 使用同一画像重启可见浏览器”仍失败后会跳过当前作者并继续，不写入观察或截图；推荐流故障进入封顶冷却，批次同步与截图上传的网络/超时/5xx 保留本机数据持续退避。控制页显示类别、阶段、冷却、跳过次数、下次尝试和结果。登录失效、验证码、访问频繁、账号异常、设备撤销、协议/业务拒绝、无效签名地址、未知错误和本地写盘失败仍安全暂停。跳过会降低本轮召回率。脱敏恢复日志位于共享 `data/diagnostics`，最多 3 个 1 MiB 文件，不包含 Cookie、令牌、页面正文或完整主页地址。
 
 v0.1.7 的共享控制页新增“最近错误诊断”，保留出错步骤、时间、错误类型与白名单代码，继续或重启后仍可查看最近 20 条。错误日志 `data/diagnostics/errors.jsonl` 及 `.1`、`.2` 与恢复日志分别限额，各最多 3 个 1 MiB 文件；不记录原始消息、完整堆栈或敏感信息。旧版报错不能补录；读写失败会在控制页明确提示。源码能力不代表 macOS 包已完成发布，仍须按下文在两个架构分别构建和验证。
 
@@ -55,7 +55,7 @@ v0.1.7 的共享控制页新增“最近错误诊断”，保留出错步骤、�
 cd /path/to/douyin_couple_scraper
 npm ci --ignore-scripts --no-audit --no-fund
 bash scripts/build-collector-macos.sh \
-  --version 0.1.10 \
+  --version 0.1.13 \
   --architecture universal \
   --api-base-url 'https://106.12.56.109' \
   --ca-certificate 'release/collector-server-ca.pem'
@@ -72,7 +72,7 @@ bash scripts/build-collector-macos.sh \
 ```bash
 cd /path/to/douyin_couple_scraper
 bash scripts/test-collector-macos-package.sh \
-  --package 'artifacts/collector-macos-universal-v0.1.10.tar.gz'
+  --package 'artifacts/collector-macos-universal-v0.1.13.tar.gz'
 ```
 
 验证内容包括：包内 Node 可执行、Keychain 设备令牌往返、独立画像创建、可见 Chrome 启动和本地控制页。测试使用临时数据目录，结束时删除对应的测试钥匙串项目。若测试机暂时没有 Chrome，可以加 `--skip-visible-chrome` 做不完整检查，但该结果不能作为正式发布验收。

@@ -1,1 +1,1 @@
-export const COLLECTOR_VERSION = '0.1.10';
+export const COLLECTOR_VERSION = '0.1.13';

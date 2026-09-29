@@ -175,7 +175,7 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
           },
         ),
     };
-    let runtime = new CollectorRuntime(runtimeOptions);
+    const runtime = new CollectorRuntime(runtimeOptions);
     const controlOptions = { apiClient: client, profileStore, runtime };
     collector = createCollectorControlServer(controlOptions);
     await listenCollectorControlServer(collector, 0);
@@ -221,16 +221,6 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
     await page.screenshot({ path: testInfo.outputPath('campaign-created.png'), fullPage: true });
     await localPage.getByRole('button', { name: '刷新任务' }).click();
     await localPage.getByRole('button', { name: '人工开始' }).click();
-    await expect(localPage.getByText('状态：已暂停')).toBeVisible({ timeout: 20_000 });
-    expect((await runtime.status()).pendingEvidence).toBe(true);
-    // Recreate the process coordinator from disk; polling must never resume browsing.
-    await sourceBrowser?.close();
-    runtime = new CollectorRuntime(runtimeOptions);
-    controlOptions.runtime = runtime;
-    await localPage.reload();
-    await expect(localPage.getByRole('button', { name: '继续', exact: true })).toBeVisible();
-    expect(launchCount).toBe(1);
-    await localPage.getByRole('button', { name: '继续', exact: true }).click();
     await expect
       .poll(
         async () => ({
@@ -241,7 +231,11 @@ test('真实本地 API + MySQL + 浏览器走通创建、配对、采集、截�
       )
       .toMatchObject({ runStatus: 'completed' });
     await expect(localPage.getByText('状态：已完成')).toBeVisible({ timeout: 35_000 });
-    expect(launchCount).toBe(2);
+    await expect(runtime.status()).resolves.toMatchObject({
+      pendingBatches: 0,
+      pendingEvidence: false,
+    });
+    expect(launchCount).toBe(1);
     expect(ingestionRequests).toBeGreaterThanOrEqual(3);
     expect(uploads.size).toBe(2);
     const [counts] = await pool.query<RowDataPacket[]>(

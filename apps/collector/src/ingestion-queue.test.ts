@@ -145,7 +145,9 @@ describe('本地持久待同步队列', () => {
     temporaryDirectories.push(dataRoot);
     const queue = new PersistentIngestionQueue(dataRoot);
     await queue.enqueue(batch, new Date('2026-09-15T00:00:00.000Z'));
-    const [record] = await queue.listPending();
+    const record = (await queue.listPending())[0];
+    expect(record).toBeDefined();
+    if (!record) throw new Error('测试队列记录未创建。');
     // A directory at the record path makes the atomic rename fail on every platform.
     await rm(path.join(dataRoot, 'pending-ingestion', `${record.id}.json`));
     await mkdir(path.join(dataRoot, 'pending-ingestion', `${record.id}.json`));

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DeviceTokenStore } from './device-identity.js';
 import type { SecretProtector } from './device-identity.js';
-import { uploadScreenshotEvidence } from './media-upload.js';
+import { CollectorMediaUploadError, uploadScreenshotEvidence } from './media-upload.js';
 
 const temporaryDirectories: string[] = [];
 const passthroughProtector: SecretProtector = {
@@ -24,6 +24,60 @@ afterEach(async () => {
 });
 
 describe('截图直传 OSS', () => {
+  it.each([
+    [503, true],
+    [403, false],
+  ])('签发接口 HTTP %s 暴露正确的可重试分类', async (status, retryable) => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-media-status-'));
+    temporaryDirectories.push(dataRoot);
+    const tokenStore = new DeviceTokenStore(dataRoot, passthroughProtector);
+    await tokenStore.save('collector-media-device-token-value');
+
+    const error = await uploadScreenshotEvidence(
+      {
+        apiBaseUrl: 'https://ops.example.test',
+        bytes: Buffer.from('fake-image'),
+        mimeType: 'image/png',
+        observation: { creatorObservationId: '72000000-0000-4000-8000-000000000001' },
+        purpose: 'profile_screenshot',
+        runId: '72000000-0000-4000-8000-000000000002',
+      },
+      tokenStore,
+      vi.fn().mockResolvedValue({ json: async () => ({}), ok: false, status }),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CollectorMediaUploadError);
+    expect(error).toMatchObject({ code: 'api_request_failed', retryable, status });
+  });
+
+  it('无效签名地址不可重试且不会发送图片字节', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-media-invalid-grant-'));
+    temporaryDirectories.push(dataRoot);
+    const tokenStore = new DeviceTokenStore(dataRoot, passthroughProtector);
+    await tokenStore.save('collector-media-device-token-value');
+    const fetcher = vi.fn().mockResolvedValue({
+      json: async () => ({ id: 'media-1', objectKey: 'private/key', uploadUrl: 'http://invalid' }),
+      ok: true,
+      status: 201,
+    });
+
+    const error = await uploadScreenshotEvidence(
+      {
+        apiBaseUrl: 'https://ops.example.test',
+        bytes: Buffer.from('fake-image'),
+        mimeType: 'image/png',
+        observation: { creatorObservationId: '72000000-0000-4000-8000-000000000001' },
+        purpose: 'profile_screenshot',
+        runId: '72000000-0000-4000-8000-000000000002',
+      },
+      tokenStore,
+      fetcher,
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: 'invalid_signed_upload', retryable: false });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it('API 只签发和确认元数据，图片字节仅发送到独立 OSS 域名', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'douyin-media-upload-'));
     temporaryDirectories.push(dataRoot);

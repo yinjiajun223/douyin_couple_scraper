@@ -5,18 +5,20 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>抖音采集助手 · 星探台</title>
   <style>
-    :root { font-family: "Microsoft YaHei", system-ui, sans-serif; color: #172036; background: #edf0f4; }
+    :root { font-family: Inter, "MiSans", "PingFang SC", "Microsoft YaHei", sans-serif; color: #172036; background: #edf0f4; --ink: #172036; --graphite: #566077; --signal: #b83c2b; --mint: #2d8f76; --line: #d7dce5; --panel-radius: 8px 28px 8px 8px; --panel-shadow: 0 18px 55px rgba(27, 37, 58, .07); }
     * { box-sizing: border-box; } body { margin: 0; } main { max-width: 1080px; margin: auto; padding: 32px 24px 60px; }
     header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 24px; }
     h1 { font-size: 30px; margin: 6px 0; } h2 { font-size: 18px; margin: 0 0 14px; } p { line-height: 1.8; }
-    .eyebrow { color: #b83c2b; font-size: 12px; letter-spacing: .14em; } .muted, small { color: #566077; }
+    .eyebrow { color: var(--signal); font: 800 12px Consolas, monospace; letter-spacing: .14em; } .muted, small { color: var(--graphite); }
     .badge { padding: 8px 12px; border-radius: 5px; color: #16614f; background: #ddf3eb; white-space: nowrap; }
-    .grid { display: grid; grid-template-columns: 1fr 1.3fr; gap: 20px; } section { padding: 24px; background: white; border: 1px solid #d7dce5; border-radius: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1.3fr; gap: 20px; } section { padding: 24px; background: white; border: 1px solid var(--line); border-radius: var(--panel-radius); box-shadow: var(--panel-shadow); }
     .step { color: #b83c2b; font: bold 14px Consolas, monospace; margin-right: 10px; }
     .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; } form { display: grid; gap: 14px; } label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
-    input, select, button { font: inherit; border-radius: 6px; padding: 10px 12px; min-height: 42px; } input, select { min-width: 0; width: 100%; border: 1px solid #b9c3d2; background: white; color: #172036; }
+    input, select, button { font: inherit; border-radius: 6px; padding: 10px 12px; min-height: 44px; } input, select { min-width: 0; width: 100%; border: 1px solid #cbd2de; background-color: white; color: var(--ink); font-weight: 700; transition: border-color 150ms ease, box-shadow 150ms ease; }
+    select { appearance: none; padding-right: 38px; background-image: linear-gradient(45deg, transparent 50%, #69748a 50%), linear-gradient(135deg, #69748a 50%, transparent 50%); background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px; background-repeat: no-repeat; background-size: 5px 5px; cursor: pointer; }
+    input:hover, select:hover { border-color: #aeb8c8; } input:focus, select:focus { border-color: #aeb8c8; box-shadow: 0 4px 14px rgba(23, 32, 54, .08); outline: 0; }
     button { border: 0; cursor: pointer; font-weight: 600; color: white; background: #b83c2b; } button.secondary { background: #eaf0f7; color: #273b59; } button.danger { background: #fff0ee; color: #9b3024; }
-    button:disabled { opacity: .55; cursor: not-allowed; } :focus-visible { outline: 3px solid #2d8f76; outline-offset: 3px; } [hidden] { display: none !important; }
+    button:disabled { opacity: .55; cursor: not-allowed; } :focus-visible { outline: 3px solid rgba(230, 84, 60, .34); outline-offset: 3px; } [hidden] { display: none !important; }
     .run { border-top: 1px solid #d7dce5; padding: 20px 0; } .run:first-child { border: 0; } .run h3 { margin: 0; font-size: 17px; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; } .run-head { display: flex; gap: 12px; justify-content: space-between; }
     .counts { display: flex; gap: 24px; margin: 15px 0; color: #566077; font-size: 13px; } .counts b { color: #172036; font: 600 24px Consolas, monospace; margin-right: 6px; }
@@ -139,14 +141,17 @@ export const COLLECTOR_CONTROL_HTML = `<!doctype html>
         const terminate = ['running', 'paused', 'claimed'].includes(run.status) ? '<button data-action="terminate" class="danger">终止</button>' : '';
         const low = run.lowConfidenceDiagnostics || {};
         const recovery = run.recoveryDiagnostics || {};
+        const recoverableSkips = run.recoverableSkips || {};
         const latest = low.lastIssue ? '<p class="run-note diagnostic">最近低可信度：' + Number(low.lastIssue.parserConfidence || 0).toFixed(2) + '；缺少 ' + escapeHtml((low.lastIssue.missingFields || []).join('、') || '关键主页字段') + '</p>' : '';
         const recoveryIssues = { transient_page_failure:'暂时性页面故障', platform_restriction:'平台限制', login_required:'登录失效', captcha_required:'安全验证', low_parser_confidence:'低可信度' };
         const recoveryStages = { idle:'空闲', reload_page:'重新加载当前页', recreate_profile_page:'重建页面', restart_browser:'同画像重启浏览器', circuit_open:'恢复熔断' };
-        const recoveryResults = { waiting:'等待重试', attempting:'正在尝试', recovered:'已恢复', exhausted:'恢复预算耗尽', cancelled:'已取消', idle:'空闲' };
+        const recoveryResults = { waiting:'等待重试', attempting:'正在尝试', cooling:'冷却等待', recovered:'已恢复', skipped:'已跳过并继续', exhausted:'恢复预算耗尽', cancelled:'已取消', idle:'空闲' };
         const nextAttempt = recovery.nextAttemptAt ? '；下次尝试：' + escapeHtml(new Date(recovery.nextAttemptAt).toLocaleString('zh-CN')) : '';
         const recoveryTime = recovery.eventStartedAt ? ' · 发生于 ' + escapeHtml(new Date(recovery.eventStartedAt).toLocaleString('zh-CN')) : '';
         const recoveryNote = recovery.issueCode ? '<p class="run-note diagnostic">最近一次恢复记录（不代表当前步骤）：' + escapeHtml(recoveryIssues[recovery.issueCode] || '未知安全事件') + ' · ' + escapeHtml(recovery.pageType === 'feed' ? '推荐页' : '作者页') + ' · ' + escapeHtml(recoveryStages[recovery.stage] || '未知阶段') + ' · 第 ' + Number(recovery.attemptCount || 0) + ' 次 · ' + escapeHtml(recoveryResults[recovery.lastResult] || '未知结果') + recoveryTime + nextAttempt + '</p>' : '';
-        return '<article class="run" data-run-id="' + escapeHtml(run.id) + '"><div class="run-head"><h3>' + escapeHtml(run.campaignName || run.id) + '</h3><small>状态：' + escapeHtml(recovering ? '等待本机继续' : labels[run.status] || run.status) + '</small></div><div class="counts"><span><b>' + Number(p.feedItemsSeen || 0) + '</b>浏览作品</span><span><b>' + Number(p.creatorProfilesSeen || 0) + '</b>核验作者</span><span><b>' + Number(p.candidatesFound || 0) + '</b>硬筛通过</span><span><b>' + Number(low.skippedTotal || 0) + '</b>解析跳过</span></div>' + (run.localMessage ? '<p class="run-note">' + escapeHtml(run.localMessage) + '</p>' : '') + recoveryNote + latest + '<div class="actions">' + start + pause + resume + terminate + '</div></article>';
+        const skipTime = recoverableSkips.lastSkippedAt ? ' · ' + escapeHtml(new Date(recoverableSkips.lastSkippedAt).toLocaleString('zh-CN')) : '';
+        const skipNote = Number(recoverableSkips.total || 0) > 0 ? '<p class="run-note diagnostic">最近一次可恢复跳过（不代表当前步骤）：' + escapeHtml(recoverableSkips.lastPageType === 'feed' ? '推荐页' : '作者页') + ' · ' + escapeHtml(recoveryIssues[recoverableSkips.lastReason] || '暂时性页面故障') + skipTime + ' · 已跳过并继续</p>' : '';
+        return '<article class="run" data-run-id="' + escapeHtml(run.id) + '"><div class="run-head"><h3>' + escapeHtml(run.campaignName || run.id) + '</h3><small>状态：' + escapeHtml(recovering ? '等待本机继续' : labels[run.status] || run.status) + '</small></div><div class="counts"><span><b>' + Number(p.feedItemsSeen || 0) + '</b>浏览作品</span><span><b>' + Number(p.creatorProfilesSeen || 0) + '</b>核验作者</span><span><b>' + Number(p.candidatesFound || 0) + '</b>硬筛通过</span><span><b>' + Number(low.skippedTotal || 0) + '</b>解析跳过</span><span><b>' + Number(recoverableSkips.total || 0) + '</b>故障跳过</span></div>' + (run.localMessage ? '<p class="run-note">' + escapeHtml(run.localMessage) + '</p>' : '') + recoveryNote + skipNote + latest + '<div class="actions">' + start + pause + resume + terminate + '</div></article>';
       }).join('') : '<p class="empty">还没有可执行的运行。请在工作台「筛选任务」保存任务后，点击「创建运行」。</p>';
     }
     if (state.connectionError) message.textContent = state.connectionError;

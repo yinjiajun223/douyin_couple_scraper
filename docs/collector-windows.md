@@ -14,9 +14,12 @@
 
 - 单次运行最长可配置 1,440 分钟。多个停止条件是“任一先到即停止”；希望尽量按时间运行时，应清空会更早触发的非必需作品数、作者数或候选数条件。
 - 运行前关闭 Windows 自动睡眠，并保持 `start-collector.cmd` 的 CMD 窗口和可见 Chrome 打开。关闭窗口、电脑休眠、断电或进程退出都不会由后台自动续跑。
-- 单独的“服务异常”“网络错误”“请求异常”或瞬时 5xx 会先保存检查点，再约 15 秒重载当前页、约 60 秒重建页面，必要时约 5 分钟后使用同一持久画像重启可见浏览器。恢复有次数与熔断上限，不会无限刷新。
+- 单个作者页的“服务异常”会先保存检查点，再约 15 秒重载当前页、约 60 秒重建页面，必要时约 5 分钟后使用同一持久画像重启可见浏览器。v0.1.11 起，完整恢复仍失败只跳过当前作者并继续，不写入观察或截图；控制页累计“故障跳过”。v0.1.12 修复了重启浏览器并跳过作者后仍等待旧页面、进而错误暂停的问题。这代表未取得可信数据，不代表作者不符合条件，累计较多会降低本轮召回率。
+- 推荐流暂时故障不能跳过；完整恢复仍失败时进入可取消、指数增加且封顶的冷却，再开启下一恢复周期。批次同步与截图上传遇到网络、超时或 5xx 时保留本机数据并持续退避，期间停止翻页。
 - 登录失效、验证码、安全验证、访问频繁、账号异常和无法可靠分类的故障仍立即暂停并等待人工处理。
 - 本机控制页显示故障类别、页面类型、恢复阶段、尝试次数、下次尝试时间和最后结果；恢复期间“暂停”“终止”仍有效。脱敏恢复日志位于共享 `data/diagnostics`，单文件最多 1 MiB、最多 3 个文件，不含 Cookie、令牌、页面正文或完整主页地址。
+
+设备撤销、HTTP 401/403/429、升级要求、业务批次拒绝、无效签名上传地址、未知错误和本地检查点/队列写盘失败不会无限重试，仍安全暂停并保留可恢复数据。
 
 ### v0.1.7 本机错误诊断
 
@@ -58,8 +61,8 @@ v0.1.8 修复普通作品文字提到“验证码”“安全验证”即误暂�
 powershell -ExecutionPolicy Bypass -File scripts/build-collector-windows.ps1 `
   -ApiBaseUrl "https://ops.example.com" `
   -CaCertificatePath "release/collector-server-ca.pem"
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.10.zip
-powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.10.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-package.ps1 -PackagePath artifacts/collector-windows-v0.1.13.zip
+powershell -ExecutionPolicy Bypass -File scripts/test-collector-windows-launcher.ps1 -PackagePath artifacts/collector-windows-v0.1.13.zip
 npm run build -w @douyin/collector
 node scripts/test-collector-safety-dom.mjs
 ```

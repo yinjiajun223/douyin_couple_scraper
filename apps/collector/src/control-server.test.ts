@@ -44,6 +44,12 @@ describe('本地控制页中心 API 客户端', () => {
       },
       {
         id: 'run-recovered',
+        recoverableSkips: {
+          lastPageType: 'profile',
+          lastReason: 'transient_page_failure',
+          lastSkippedAt: '2026-09-23T01:01:00.000Z',
+          total: 1,
+        },
         recoveryDiagnostics: {
           attemptCount: 2,
           issueCode: 'transient_page_failure',
@@ -107,6 +113,10 @@ describe('本地控制页中心 API 客户端', () => {
       expect(COLLECTOR_CONTROL_HTML).toContain("recovered:'已恢复'");
       expect(COLLECTOR_CONTROL_HTML).toContain("circuit_open:'恢复熔断'");
       expect(COLLECTOR_CONTROL_HTML).toContain('const recovery = run.recoveryDiagnostics || {}');
+      expect(COLLECTOR_CONTROL_HTML).toContain(
+        'const recoverableSkips = run.recoverableSkips || {}',
+      );
+      expect(COLLECTOR_CONTROL_HTML).toContain('已跳过并继续');
       expect(COLLECTOR_CONTROL_HTML).toContain('data-action="pause"');
     } finally {
       await new Promise<void>((resolve, reject) => {
@@ -222,7 +232,7 @@ describe('本地控制页中心 API 客户端', () => {
     expect(requests).toEqual([{ method: 'GET', url: 'https://ops.example.test/collector/runs' }]);
     expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
       'x-collector-protocol-version': '1.0.0',
-      'x-collector-version': '0.1.10',
+      'x-collector-version': '0.1.13',
       'x-parser-version': '0.5.0',
     });
 
